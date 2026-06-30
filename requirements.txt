@@ -1,0 +1,18 @@
+# FastAPI web stack
+fastapi>=0.110
+uvicorn[standard]>=0.29
+jinja2>=3.1
+python-multipart>=0.0.9
+itsdangerous>=2.1
+
+# Scientific / data stack (same as the original Streamlit app)
+numpy
+pandas
+
+# Process-simulation stack. Requires Python 3.12+ (thermosteam uses 3.12
+# f-string syntax). Imported lazily so the web UI still boots without them.
+biosteam
+thermosteam
+
+# Optional: nanoid for node id generation (a stdlib fallback is used otherwise).
+# nanoid

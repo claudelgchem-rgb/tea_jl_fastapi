@@ -34,14 +34,9 @@ except Exception:  # noqa: BLE001
         alphabet = _string.ascii_letters + _string.digits
         return "".join(secrets.choice(alphabet) for _ in range(size))
 
-# fill_water3 ships with the deployment aux_chemical module; fall back locally.
-try:  # pragma: no cover
-    from .aux_chemical import fill_water3  # type: ignore
-except Exception:  # noqa: BLE001
-    try:
-        from aux_chemical import fill_water3  # type: ignore
-    except Exception:  # noqa: BLE001
-        from .aux_compat import fill_water3
+# fill_water3 comes from the aux_compat resolver (real aux_chemical if present,
+# else a local shim).
+from .aux_compat import fill_water3
 
 from ..flow_models import FlowEdge, FlowNode, FlowState
 

@@ -166,10 +166,7 @@ def api_chemicals(req: schemas.ChemicalsRequest, state=Depends(get_state)):
 
 @app.post("/api/solutions")
 def api_solutions(req: schemas.SolutionsRequest, state=Depends(get_state)):
-    try:
-        from .flow_tabs.util_bfd import fill_water3
-    except Exception:  # noqa: BLE001
-        from .flow_tabs.aux_compat import fill_water3
+    from .flow_tabs.aux_compat import fill_water3
 
     solutions = {}
     prices = {}

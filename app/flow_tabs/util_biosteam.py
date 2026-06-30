@@ -29,32 +29,25 @@ except Exception:  # noqa: BLE001 - any import failure means "not available"
     tmo = None  # type: ignore
     BIOSTEAM_AVAILABLE = False
 
-# Custom unit operations + chemical helpers.  Prefer the deployment modules,
-# fall back to the local shims (see aux_compat.py).
-try:  # pragma: no cover
-    from .Biosteam_custom_unit import *  # type: ignore  # noqa: F401,F403
-    from .aux_chemical import fill_water3, process_chemical_data  # type: ignore  # noqa: F401
-except Exception:  # noqa: BLE001
-    try:  # deployment lays these out as top-level modules
-        from Biosteam_custom_unit import *  # type: ignore  # noqa: F401,F403
-        from aux_chemical import fill_water3, process_chemical_data  # type: ignore  # noqa: F401
-    except Exception:  # noqa: BLE001
-        from .aux_compat import (  # noqa: F401
-            BatchHeatExchanger,
-            CustomSplitter,
-            Custom_fermenter3,
-            MVR,
-            FreezeDryer2,
-            HIC_Column,
-            IEX_Column,
-            Diafiltration,
-            gel_filtration,
-            SMB_Column,
-            sol_processor,
-            custom_distillation,
-            fill_water3,
-            process_chemical_data,
-        )
+# Custom unit operations + chemical helpers come from the aux_compat resolver,
+# which prefers a real aux_chemical / Biosteam_custom_unit module wherever it is
+# dropped and otherwise provides fallback shims.
+from .aux_compat import (  # noqa: F401
+    BatchHeatExchanger,
+    CustomSplitter,
+    Custom_fermenter3,
+    MVR,
+    FreezeDryer2,
+    HIC_Column,
+    IEX_Column,
+    Diafiltration,
+    gel_filtration,
+    SMB_Column,
+    sol_processor,
+    custom_distillation,
+    fill_water3,
+    process_chemical_data,
+)
 
 
 def _log(state, *args):

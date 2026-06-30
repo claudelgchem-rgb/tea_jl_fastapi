@@ -7,6 +7,33 @@ registers chemicals, defines media solutions, draws a block-flow diagram of
 unit operations, and runs a simulation that produces an OPEX/CAPEX cost
 breakdown.
 
+## Frontend: TEA-Agent Platform v9
+
+The active UI is the single-page **TEA-Agent v9** app
+(`app/templates/index.html` + `app/static/app.js`): scenario input, NPV/IRR
+analysis, charts, a chemical DB, a solution manager, an SVG block-flow editor,
+project save/load, and a BioSTEAM panel. The frontend is self-contained
+(Tailwind/Chart.js/XLSX via CDN) and talks to the JSON API below, which is
+wired to the original `util_biosteam` / `aux_chemical` files.
+
+### API the v9 UI calls
+
+| Method & path | Purpose |
+|---|---|
+| `GET/POST /api/chemicals`, `PUT/DELETE /api/chemicals/{name}`, `POST /api/chemicals/upload` | chemical DB (drives thermo) |
+| `GET/POST /api/solutions` | media solution manager |
+| `GET /api/bfd/node-types`, `GET /api/bfd`, `POST /api/bfd/node`, `DELETE /api/bfd/node/{id}`, `POST /api/bfd/clear`, `POST /api/bfd/save`, `POST /api/bfd/edge`, `DELETE /api/bfd/edge/{id}` | block-flow editor |
+| `GET /api/biosteam/status`, `GET /api/biosteam/defaults`, `POST /api/biosteam/simulate` | simulation (see `app/sim.py`) |
+| `GET /api/project/list`, `POST /api/project/save`, `GET /api/project/load/{name}`, `DELETE /api/project/{name}` | project persistence (JSON under `data/projects/`) |
+| `POST /api/chat`, `GET /api/exchange-rate`, `POST /api/upload` | assistant / FX / file import (offline-safe stubs) |
+
+`POST /api/biosteam/simulate` (in `app/sim.py`) converts the UI payload into the
+`nodes`/`edges`/solutions structures the original `run_biosteam2` expects, runs
+scale-up + pricing, and returns the `$/MT` cost categories plus a mass balance.
+Like the rest of the pipeline it needs the deferred `Biosteam_custom_unit`
+module to complete a run; without it the endpoint returns a clear
+`{success:false, error, unit_hint}` that the UI surfaces.
+
 ## What changed in the conversion
 
 | Streamlit concept | FastAPI replacement |

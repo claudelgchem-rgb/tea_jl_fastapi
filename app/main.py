@@ -1,39 +1,55 @@
-"""FastAPI application (replaces the Streamlit ``main_app.py``).
+"""FastAPI backend for the TEA-Agent v9 UI.
 
-The Streamlit single-script UI is decomposed into:
-
-* a small set of JSON endpoints under ``/api`` that mutate the per-session
-  state and run the simulation, and
-* a single-page frontend (``templates/index.html`` + ``static/app.js``) that
-  renders the chemical/solution forms, an interactive flow editor (replacing
-  the ``streamlit_flow`` React component with a plain JS canvas), the node
-  property forms (built from the schemas in ``util_bfd``) and the result
-  tables / process diagram.
+Serves the single-page UI and the JSON API it calls: chemical DB, solution
+manager, BFD editor, project save/load, and the BioSTEAM simulation (wired to
+the original ``util_biosteam`` / ``aux_chemical`` pipeline via ``app.sim``).
 """
 
 from __future__ import annotations
 
+import io
+import json
 import os
-from typing import Optional
+import time
+from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+import pandas as pd
+from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
-from . import data, schemas
-from .compute import run_calculation
-from .flow_tabs import util_bfd
+from . import data, default_data, sim
 from .flow_tabs import util_biosteam as ub
 from .session import store
 
 BASE = os.path.dirname(__file__)
+PROJECT_DIR = os.path.join(data.DATA_DIR, "projects")
+os.makedirs(PROJECT_DIR, exist_ok=True)
 
-app = FastAPI(title="TEA – Techno-Economic Analysis (FastAPI)")
+app = FastAPI(title="TEA-Agent Platform v9.0")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE, "templates"))
 
 COOKIE = "tea_sid"
+
+
+def _seed_ui(state) -> None:
+    """Seed the v9 UI-state containers from the session defaults."""
+    if "ui_seeded" in state:
+        return
+    cd = state.chem_data
+    state.ui_chemicals = [
+        {"name": n, "formula": cd.get("Formula", {}).get(n, ""),
+         "price": float(cd.get("Price (USD/kg)", {}).get(n, 0) or 0),
+         "phase": cd.get("Phase", {}).get(n, "l")}
+        for n in state.chemical_list
+    ]
+    state.ui_solutions = []
+    state.bfd_nodes = []
+    state.bfd_edges = []
+    state.ui_seeded = True
 
 
 def get_state(request: Request, response: Response):
@@ -41,252 +57,327 @@ def get_state(request: Request, response: Response):
     sid, state = store.get_or_create(sid)
     if "uploader_key" not in state:
         data.init_session(state)
+    _seed_ui(state)
     response.set_cookie(COOKIE, sid, httponly=True, samesite="lax")
     return state
 
 
-# --- State snapshot ----------------------------------------------------------
-
-def _node_view(n):
-    d = n.data
-    return {
-        "id": n.id,
-        "pos": list(n.pos),
-        "node_type": d.get("node_type"),
-        "content": d.get("custom_value", d.get("content", n.id)),
-        "emoji": d.get("emoji", util_bfd.get_emoji(d.get("node_type"))),
-    }
-
-
-def snapshot(state):
-    fs = state.flow_state
-    chem_data = state.chem_data
-    chems = []
-    for cid in state.chemical_list:
-        chems.append({
-            "Name": chem_data.get("Name", {}).get(cid, cid),
-            "Formula": chem_data.get("Formula", {}).get(cid, ""),
-            "Price (USD/kg)": chem_data.get("Price (USD/kg)", {}).get(cid, 0.0),
-            "Phase": chem_data.get("Phase", {}).get(cid, "l"),
-        })
-    return {
-        "biosteam_available": ub.BIOSTEAM_AVAILABLE,
-        "config": {
-            "main_product": state.get("main_product"),
-            "main_source": state.get("main_source"),
-            "target_amount": state.get("target_amount"),
-            "operating_hours": state.get("operating_hours"),
-            "gmp": state.get("gmp", True),
-            "od_to_dcw": state.get("od_to_dcw", 0.22),
-            "electricity_price": state.get("electricity_price", 0.128),
-            "currency": state.get("currency", 1500),
-        },
-        "chemicals": chems,
-        "chemical_list": state.chemical_list,
-        "heat_utility": state.heat_utility,
-        "solutions": state.solutions,
-        "autoclave": state.autoclave,
-        "prices": state.prices,
-        "node_types": list(util_bfd.get_node_feature(state).keys()),
-        "flow": {
-            "nodes": [_node_view(n) for n in fs.nodes],
-            "edges": [e.asdict() for e in fs.edges],
-        },
-        "proceed": state.get("proceed", False),
-        "proceed2": state.get("proceed2", False),
-        "scenarios": data.list_scenarios(),
-    }
-
-
-# --- Page --------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 def index(request: Request, response: Response, state=Depends(get_state)):
     return templates.TemplateResponse(request, "index.html")
 
 
-@app.get("/api/state")
-def api_state(state=Depends(get_state)):
-    return snapshot(state)
+# ---------------------------------------------------------------------------
+# Chemicals
+# ---------------------------------------------------------------------------
+
+class ChemicalIn(BaseModel):
+    name: str
+    formula: str = ""
+    price: float = 0.0
+    phase: str = "l"
 
 
-# --- Configuration step ('다음') --------------------------------------------
-
-@app.post("/api/config")
-def api_config(req: schemas.ConfigRequest, state=Depends(get_state)):
-    cl = state.chemical_list
-    if req.main_product not in cl or req.main_source not in cl:
-        raise HTTPException(400, "main_product/main_source must be registered chemicals")
-    state.main_product = req.main_product
-    state.main_source = req.main_source
-    state.target_amount = req.target_amount
-    state.operating_hours = req.operating_hours
-    state.gmp = req.gmp
-    state.od_to_dcw = req.od_to_dcw
-    state.electricity_price = req.electricity_price
-    state.currency = req.currency
-    state.tmp["product_index"] = cl.index(req.main_product)
-    state.tmp["source_index"] = cl.index(req.main_source)
-    state.tmp["target_amount"] = req.target_amount
-    state.tmp["electricity_price"] = req.electricity_price
-    state.tmp["operating_hours"] = req.operating_hours
-    state.tmp["od_to_dcw"] = req.od_to_dcw
-    if req.heat_utility is not None:
-        state.heat_utility.update(req.heat_utility)
-    if ub.BIOSTEAM_AVAILABLE:
-        try:
-            ub.bst.PowerUtility.price = req.electricity_price
-        except Exception:  # noqa: BLE001
-            pass
-    state.proceed = True
-    return snapshot(state)
-
-
-# --- Chemicals ---------------------------------------------------------------
-
-@app.post("/api/chemicals")
-def api_chemicals(req: schemas.ChemicalsRequest, state=Depends(get_state)):
+def _sync_chem_data(state) -> None:
+    """Rebuild chem_data + thermo from the UI chemical list."""
     cols = ["Name", "Formula", "Price (USD/kg)", "Phase"]
     chem_data = {c: {} for c in cols}
-    for row in req.chemicals:
-        chem_data["Name"][row.Name] = row.Name
-        chem_data["Formula"][row.Name] = row.Formula
-        chem_data["Price (USD/kg)"][row.Name] = row.Price
-        chem_data["Phase"][row.Name] = row.Phase
-    data.set_chemicals(state, chem_data)
-    # Keep main product/source valid.
-    if state.get("main_product") not in state.chemical_list and state.chemical_list:
-        state.main_product = state.chemical_list[0]
-    if state.get("main_source") not in state.chemical_list and state.chemical_list:
-        state.main_source = state.chemical_list[0]
-    return snapshot(state)
+    for c in state.ui_chemicals:
+        chem_data["Name"][c["name"]] = c["name"]
+        chem_data["Formula"][c["name"]] = c.get("formula", "")
+        chem_data["Price (USD/kg)"][c["name"]] = float(c.get("price", 0) or 0)
+        chem_data["Phase"][c["name"]] = c.get("phase", "l")
+    if chem_data["Price (USD/kg)"]:
+        try:
+            data.set_chemicals(state, chem_data)
+        except Exception:  # noqa: BLE001 - thermo build is best-effort here
+            state.chem_data = chem_data
+            state.chemical_list = list(chem_data["Price (USD/kg)"].keys())
 
 
-# --- Solutions ('용액 저장') -------------------------------------------------
+@app.get("/api/chemicals")
+def chemicals_list(state=Depends(get_state)):
+    return {"chemicals": state.ui_chemicals}
+
+
+@app.post("/api/chemicals")
+def chemicals_add(chem: ChemicalIn, state=Depends(get_state)):
+    state.ui_chemicals = [c for c in state.ui_chemicals if c["name"] != chem.name]
+    state.ui_chemicals.append({"name": chem.name, "formula": chem.formula,
+                               "price": chem.price, "phase": chem.phase})
+    _sync_chem_data(state)
+    return {"ok": True, "chemicals": state.ui_chemicals}
+
+
+@app.put("/api/chemicals/{name}")
+def chemicals_update(name: str, chem: ChemicalIn, state=Depends(get_state)):
+    for c in state.ui_chemicals:
+        if c["name"] == name:
+            c.update({"name": chem.name, "formula": chem.formula,
+                      "price": chem.price, "phase": chem.phase})
+            break
+    else:
+        state.ui_chemicals.append({"name": chem.name, "formula": chem.formula,
+                                   "price": chem.price, "phase": chem.phase})
+    _sync_chem_data(state)
+    return {"ok": True, "chemicals": state.ui_chemicals}
+
+
+@app.delete("/api/chemicals/{name}")
+def chemicals_delete(name: str, state=Depends(get_state)):
+    state.ui_chemicals = [c for c in state.ui_chemicals if c["name"] != name]
+    _sync_chem_data(state)
+    return {"ok": True, "chemicals": state.ui_chemicals}
+
+
+@app.post("/api/chemicals/upload")
+async def chemicals_upload(file: UploadFile = File(...), state=Depends(get_state)):
+    raw = await file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(raw), sep=None, engine="python")
+    except Exception:  # noqa: BLE001
+        return {"success": False}
+    cols = {c.lower().strip(): c for c in df.columns}
+    name_c = cols.get("name"); price_c = cols.get("price (usd/kg)") or cols.get("price")
+    formula_c = cols.get("formula"); phase_c = cols.get("phase")
+    if not name_c:
+        return {"success": False}
+    for _, row in df.iterrows():
+        nm = str(row[name_c]).strip()
+        if not nm or nm == "nan":
+            continue
+        state.ui_chemicals = [c for c in state.ui_chemicals if c["name"] != nm]
+        state.ui_chemicals.append({
+            "name": nm,
+            "formula": str(row[formula_c]) if formula_c and pd.notna(row[formula_c]) else "",
+            "price": float(row[price_c]) if price_c and pd.notna(row[price_c]) else 0.0,
+            "phase": str(row[phase_c]) if phase_c and pd.notna(row[phase_c]) else "l",
+        })
+    _sync_chem_data(state)
+    return {"success": True, "chemicals": state.ui_chemicals}
+
+
+# ---------------------------------------------------------------------------
+# Solutions
+# ---------------------------------------------------------------------------
+
+class SolutionsIn(BaseModel):
+    solutions: List[Dict[str, Any]]
+
+
+@app.get("/api/solutions")
+def solutions_get(state=Depends(get_state)):
+    return {"solutions": state.ui_solutions}
+
 
 @app.post("/api/solutions")
-def api_solutions(req: schemas.SolutionsRequest, state=Depends(get_state)):
-    from .flow_tabs.aux_compat import fill_water3
-
-    solutions = {}
-    prices = {}
-    autoclave = {}
-    price_col = state.chem_data["Price (USD/kg)"]
-    for item in req.solutions:
-        comp = {r.Name: r.concentration for r in item.rows if r.Name}
-        comp = fill_water3(comp, 1)
-        solutions[item.name] = comp
-        autoclave[item.name] = item.autoclave
-        prices[item.name] = sum(mass * float(price_col.get(chem, 0.0)) for chem, mass in comp.items())
-    # Always include the Water solution (main_app lines 278-280).
-    solutions["Water"] = {"Water": 1000}
-    autoclave["Water"] = False
-    prices["Water"] = float(price_col.get("Water", 0.0))
-
-    state.solutions = solutions
-    state.autoclave = autoclave
-    state.prices = prices
-    state.proceed2 = True
-    return snapshot(state)
-
-
-# --- Flow: nodes / edges -----------------------------------------------------
-
-@app.post("/api/nodes/add")
-def api_add_node(req: schemas.AddNodeRequest, state=Depends(get_state)):
-    util_bfd.add_node(state, req.node_type)
-    return snapshot(state)
-
-
-@app.post("/api/nodes/delete")
-def api_delete_node(req: schemas.DeleteNodeRequest, state=Depends(get_state)):
-    util_bfd.delete_node(state, req.node_id)
-    return snapshot(state)
-
-
-@app.post("/api/nodes/move")
-def api_move_node(req: schemas.MoveNodeRequest, state=Depends(get_state)):
-    for n in state.flow_state.nodes:
-        if n.id == req.node_id:
-            n.pos = (req.x, req.y)
-            break
+def solutions_save(body: SolutionsIn, state=Depends(get_state)):
+    state.ui_solutions = body.solutions
     return {"ok": True}
 
 
-@app.post("/api/edges/add")
-def api_add_edge(req: schemas.AddEdgeRequest, state=Depends(get_state)):
-    ids = {n.id for n in state.flow_state.nodes}
-    if req.source not in ids or req.target not in ids:
-        raise HTTPException(400, "unknown node id")
-    util_bfd.add_edge(state, req.source, req.target)
-    return snapshot(state)
+# ---------------------------------------------------------------------------
+# BFD
+# ---------------------------------------------------------------------------
+
+class NodeIn(BaseModel):
+    node_type: str
+    label: str = ""
+    x: float = 100.0
+    y: float = 100.0
 
 
-@app.post("/api/edges/delete")
-def api_delete_edge(req: schemas.DeleteEdgeRequest, state=Depends(get_state)):
-    fs = state.flow_state
-    fs.edges = [e for e in fs.edges if e.id != req.edge_id]
-    return snapshot(state)
+class EdgeIn(BaseModel):
+    source: str
+    target: str
 
 
-def _find_node(state, node_id: str):
-    for n in state.flow_state.nodes:
-        if n.id == node_id:
-            return n
-    raise HTTPException(404, "node not found")
+class BFDSaveIn(BaseModel):
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
 
 
-@app.get("/api/nodes/{node_id}/schema")
-def api_node_schema(node_id: str, state=Depends(get_state)):
-    node = _find_node(state, node_id)
-    return util_bfd.build_node_schema(state, node)
+@app.get("/api/bfd/node-types")
+def bfd_node_types():
+    return {"nodeTypes": sim.node_types()}
 
 
-@app.post("/api/nodes/{node_id}")
-def api_edit_node(node_id: str, req: schemas.EditNodeRequest, state=Depends(get_state)):
-    node = _find_node(state, node_id)
-    util_bfd.apply_node_edit(state, node, req.name, req.value)
-    return snapshot(state)
+@app.get("/api/bfd")
+def bfd_get(state=Depends(get_state)):
+    return {"nodes": state.bfd_nodes, "edges": state.bfd_edges}
 
 
-# --- Reset -------------------------------------------------------------------
+@app.post("/api/bfd/node")
+def bfd_add_node(node: NodeIn, state=Depends(get_state)):
+    nid = f"n_{int(time.time()*1000)}_{len(state.bfd_nodes)}"
+    new = {"id": nid, "node_type": node.node_type, "label": node.label or node.node_type,
+           "x": node.x, "y": node.y, "params": sim.default_node_params(node.node_type)}
+    state.bfd_nodes.append(new)
+    return {"node": new}
 
-@app.post("/api/reset")
-def api_reset(state=Depends(get_state)):
-    util_bfd.initialize_flowstate(state)
-    return snapshot(state)
+
+@app.delete("/api/bfd/node/{node_id}")
+def bfd_delete_node(node_id: str, state=Depends(get_state)):
+    state.bfd_nodes = [n for n in state.bfd_nodes if n["id"] != node_id]
+    state.bfd_edges = [e for e in state.bfd_edges if e["source"] != node_id and e["target"] != node_id]
+    return {"nodes": state.bfd_nodes, "edges": state.bfd_edges}
 
 
-# --- Calculate ---------------------------------------------------------------
+@app.post("/api/bfd/clear")
+def bfd_clear(state=Depends(get_state)):
+    state.bfd_nodes = []
+    state.bfd_edges = []
+    return {"ok": True}
 
-@app.post("/api/calculate")
-def api_calculate(state=Depends(get_state)):
+
+@app.post("/api/bfd/save")
+def bfd_save(body: BFDSaveIn, state=Depends(get_state)):
+    state.bfd_nodes = body.nodes
+    state.bfd_edges = body.edges
+    return {"ok": True}
+
+
+@app.post("/api/bfd/edge")
+def bfd_add_edge(edge: EdgeIn, state=Depends(get_state)):
+    eid = f"e_{int(time.time()*1000)}_{len(state.bfd_edges)}"
+    new = {"id": eid, "source": edge.source, "target": edge.target}
+    state.bfd_edges.append(new)
+    return {"edge": new}
+
+
+@app.delete("/api/bfd/edge/{edge_id}")
+def bfd_delete_edge(edge_id: str, state=Depends(get_state)):
+    state.bfd_edges = [e for e in state.bfd_edges if e["id"] != edge_id]
+    return {"edges": state.bfd_edges}
+
+
+# ---------------------------------------------------------------------------
+# BioSTEAM
+# ---------------------------------------------------------------------------
+
+@app.get("/api/biosteam/status")
+def biosteam_status():
+    return {"available": ub.BIOSTEAM_AVAILABLE}
+
+
+@app.get("/api/biosteam/defaults")
+def biosteam_defaults():
+    return {"nodeTypes": sim.node_types(), "heat_utility": default_data.HEAT_UTILITY_DEFAULT}
+
+
+@app.post("/api/biosteam/simulate")
+async def biosteam_simulate(request: Request):
+    payload = await request.json()
+    return JSONResponse(sim.simulate(payload))
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+def _project_path(name: str) -> str:
+    safe = "".join(ch for ch in name if ch not in '/\\:*?"<>|').strip() or "project"
+    return os.path.join(PROJECT_DIR, safe + ".json")
+
+
+@app.get("/api/project/list")
+def project_list():
+    names = [f[:-5] for f in os.listdir(PROJECT_DIR) if f.endswith(".json")]
+    return {"projects": sorted(names)}
+
+
+@app.post("/api/project/save")
+async def project_save(request: Request):
+    body = await request.json()
+    name = body.get("name") or "project"
+    with open(_project_path(name), "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False)
+    return {"ok": True}
+
+
+@app.get("/api/project/load/{name}")
+def project_load(name: str):
+    path = _project_path(name)
+    if not os.path.exists(path):
+        return {"error": "프로젝트를 찾을 수 없습니다."}
+    with open(path, "r", encoding="utf-8") as f:
+        return {"data": json.load(f)}
+
+
+@app.delete("/api/project/{name}")
+def project_delete(name: str):
+    path = _project_path(name)
+    if os.path.exists(path):
+        os.remove(path)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Misc: chat, exchange rate, generic upload
+# ---------------------------------------------------------------------------
+
+@app.post("/api/chat")
+async def chat(request: Request):
+    body = await request.json()
+    msgs = body.get("messages", [])
+    last = next((m.get("content", "") for m in reversed(msgs) if m.get("role") == "user"), "")
+    ctx = body.get("context", {})
+    reply = (
+        "AI 어시스턴트는 외부 LLM 연동이 구성되지 않은 환경에서 동작 중입니다.\n"
+        f"질문: `{last}`\n\n"
+        f"현재 프로젝트: {ctx.get('project', {}).get('name', '(미지정)')} · "
+        f"시나리오 {ctx.get('scenarioCount', 0)}개 · 화학물질 {ctx.get('chemCount', 0)}종.\n"
+        "환율은 좌측 하단의 '현재 환율' 버튼으로 적용할 수 있습니다."
+    )
+    return {"content": reply, "data": None}
+
+
+@app.get("/api/exchange-rate")
+def exchange_rate():
+    # Static fallback (no outbound dependency); the UI rounds and applies it.
+    return {"rate": 1380, "source": "default (offline)"}
+
+
+@app.post("/api/upload")
+async def generic_upload(file: UploadFile = File(...)):
+    raw = await file.read()
+    name = (file.filename or "").lower()
     try:
-        result = run_calculation(state)
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
-    return JSONResponse(result)
-
-
-# --- Scenarios ---------------------------------------------------------------
-
-@app.get("/api/scenarios")
-def api_scenarios(state=Depends(get_state)):
-    return {"scenarios": data.list_scenarios()}
-
-
-@app.post("/api/scenarios/save")
-def api_save(req: schemas.ScenarioRequest, state=Depends(get_state)):
-    data.save_scenario(state, req.name)
-    return {"ok": True, "scenarios": data.list_scenarios()}
-
-
-@app.post("/api/scenarios/load")
-def api_load(req: schemas.ScenarioRequest, state=Depends(get_state)):
-    try:
-        data.load_scenario(state, req.name)
-    except FileNotFoundError:
-        raise HTTPException(404, "scenario not found")
-    return snapshot(state)
+        if name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(raw), header=None)
+            rows = df.values.tolist()
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+            rows = [ln.split("\t") if "\t" in ln else ln.split(",")
+                    for ln in text.splitlines() if ln.strip()]
+        proj_map = {"프로젝트이름": "name", "제품명": "product", "분석자": "analyst",
+                    "환율": "exchangeRate", "할인율": "discountRate", "법인세율": "taxRate",
+                    "분석기간": "analysisYears", "건설기간": "constructionYears"}
+        sc_map = {"시나리오이름": "name", "생산량": "capacity", "capacity": "capacity",
+                  "투자비": "capex", "capex": "capex", "원재료비": "rawMaterial",
+                  "부재료": "subMaterial", "스팀": "steam", "전기": "electricity",
+                  "냉각": "cooling", "폐기물": "waste", "인원수": "headcount",
+                  "판매가": "sellingPrice"}
+        parsed: Dict[str, Any] = {"project": {}, "scenarios": []}
+        for row in rows:
+            if len(row) < 2:
+                continue
+            key = str(row[0]).strip().lower().replace(" ", "").replace("_", "")
+            val = str(row[1]).strip()
+            try:
+                num = float(val.replace(",", ""))
+            except ValueError:
+                num = None
+            if key in proj_map:
+                parsed["project"][proj_map[key]] = num if num is not None else val
+            elif key in sc_map:
+                if not parsed["scenarios"]:
+                    parsed["scenarios"].append({})
+                parsed["scenarios"][0][sc_map[key]] = num if num is not None else val
+        return {"success": True, "data": parsed}
+    except Exception:  # noqa: BLE001
+        return {"success": False}

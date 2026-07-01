@@ -107,12 +107,15 @@ def _install_chempy_stub() -> None:
     sys.modules["chempy"] = chempy
 
 
-_install_streamlit_stub()
-_install_chempy_stub()
-
-
 # ---------------------------------------------------------------------------
-# Resolve real modules
+# Resolve real modules -- LAZILY.
+#
+# Importing the real ``aux_chemical`` pulls in biosteam/thermosteam/numba (~20s
+# of JIT warmup).  Doing that at import time makes the whole web app slow to
+# start, which on some hosting platforms trips the startup/health-check window
+# and manifests as an endless "connecting to backend" restart loop.  So we defer
+# resolution (and thus the biosteam import) until a biosteam-backed function is
+# actually called -- i.e. only on ``/api/biosteam/simulate``.
 # ---------------------------------------------------------------------------
 
 _AUX_MODULES = (
@@ -128,6 +131,8 @@ _UNIT_MODULES = (
     "pages.flow_tabs.Biosteam_custom_unit",
 )
 
+_resolved: Dict[str, Any] = {"aux": None, "units": None, "done": False}
+
 
 def _load_first(modnames):
     for name in modnames:
@@ -138,14 +143,25 @@ def _load_first(modnames):
     return None
 
 
-_aux = _load_first(_AUX_MODULES)
-_units = _load_first(_UNIT_MODULES)
+def _resolve():
+    """Resolve the real aux_chemical / Biosteam_custom_unit modules once."""
+    if _resolved["done"]:
+        return
+    _install_streamlit_stub()
+    _install_chempy_stub()
+    _resolved["aux"] = _load_first(_AUX_MODULES)
+    _resolved["units"] = _load_first(_UNIT_MODULES)
+    _resolved["done"] = True
 
-REAL_AUX_MODULE: Optional[str] = getattr(_aux, "__name__", None)
-REAL_UNIT_MODULE: Optional[str] = getattr(_units, "__name__", None)
 
-_real_pcd = getattr(_aux, "process_chemical_data", None) if _aux is not None else None
-_real_fill = getattr(_aux, "fill_water3", None) if _aux is not None else None
+def real_aux_module() -> Optional[str]:
+    _resolve()
+    return getattr(_resolved["aux"], "__name__", None)
+
+
+def real_unit_module() -> Optional[str]:
+    _resolve()
+    return getattr(_resolved["units"], "__name__", None)
 
 
 # ---------------------------------------------------------------------------
@@ -282,14 +298,16 @@ def process_chemical_data(table):
     (so ``chem_data['Price (USD/kg)'][name]`` works) and always contains
     ``Water``.  Falls back to the shim if the real function is absent or raises.
     """
-    if callable(_real_pcd):
+    _resolve()
+    real_pcd = getattr(_resolved["aux"], "process_chemical_data", None)
+    if callable(real_pcd):
         try:
             df = _to_dataframe(table)
             wprice = _water_price(df)
             # The real v1 prepends its own 'Water'; drop incoming Water rows and
             # de-duplicate so we never build duplicate chemicals.
             df = df[df["Name"] != "Water"].drop_duplicates(subset=["Name"]).reset_index(drop=True)
-            chemicals, processed = _real_pcd(df)
+            chemicals, processed = real_pcd(df)
             chem_data = processed.to_dict() if isinstance(processed, pd.DataFrame) else _to_dict_columns(processed)
             _ensure_water(chem_data, wprice)
             return chemicals, chem_data
@@ -305,24 +323,36 @@ def fill_water3(in_mass, vol):
     ``process_chemical_data``); on any failure it falls back to the mass-balance
     shim.  A copy of ``in_mass`` is passed because the real function mutates it.
     """
-    if callable(_real_fill):
+    _resolve()
+    real_fill = getattr(_resolved["aux"], "fill_water3", None)
+    if callable(real_fill):
         try:
-            return _real_fill(dict(in_mass), vol)
+            return real_fill(dict(in_mass), vol)
         except Exception:  # noqa: BLE001
             pass
     return _shim_fill_water3(in_mass, vol)
 
 
-# ``upload_chemical2`` was a Streamlit fragment; the FastAPI port handles
-# chemical registration via /api/chemicals, so it is only re-exported if present.
-upload_chemical2 = getattr(_aux, "upload_chemical2", None)
-
-# Custom unit operations referenced by util_biosteam.
+# Custom unit operations referenced by util_biosteam, resolved lazily on first
+# attribute access (PEP 562).  ``from aux_compat import fill_water3`` stays cheap
+# because it binds the function above without triggering resolution.
 _UNIT_NAMES = (
     "BatchHeatExchanger", "CustomSplitter", "Custom_fermenter3", "MVR",
     "FreezeDryer2", "HIC_Column", "IEX_Column", "Diafiltration",
     "gel_filtration", "SMB_Column", "sol_processor", "custom_distillation",
 )
-for _uname in _UNIT_NAMES:
-    _impl = getattr(_units, _uname, None) if _units is not None else None
-    globals()[_uname] = _impl if _impl is not None else _MissingUnit(_uname)
+
+
+def __getattr__(name):  # noqa: D401 - module-level lazy attribute resolution
+    if name in _UNIT_NAMES:
+        _resolve()
+        impl = getattr(_resolved["units"], name, None) if _resolved["units"] is not None else None
+        return impl if impl is not None else _MissingUnit(name)
+    if name == "upload_chemical2":
+        _resolve()
+        return getattr(_resolved["aux"], "upload_chemical2", None)
+    if name == "REAL_AUX_MODULE":
+        return real_aux_module()
+    if name == "REAL_UNIT_MODULE":
+        return real_unit_module()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

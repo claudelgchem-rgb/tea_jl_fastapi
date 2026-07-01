@@ -16,38 +16,47 @@ from __future__ import annotations
 import json
 import copy
 
-# --- Heavy, deployment-provided dependencies (imported defensively) --------
-try:  # pragma: no cover - depends on deployment environment
-    import biosteam as bst
-    from biosteam import Unit, Stream, settings, main_flowsheet
-    import thermosteam as tmo
+# --- Heavy dependencies are imported LAZILY -------------------------------
+# Importing biosteam/thermosteam costs ~20s of numba JIT warmup.  Doing it at
+# module load makes the web app slow to start and can trip a hosting platform's
+# startup window into a "connecting to backend" restart loop.  So we import it
+# only when a calculation actually runs (see ``_ensure_biosteam``).
+import importlib.util as _ilu
 
-    BIOSTEAM_AVAILABLE = True
-    bst.Stream.display_units.flow = "kg/hr"
-except Exception:  # noqa: BLE001 - any import failure means "not available"
-    bst = None  # type: ignore
-    tmo = None  # type: ignore
-    BIOSTEAM_AVAILABLE = False
+from . import aux_compat  # cheap: aux_compat resolves its heavy deps lazily too
+from .aux_compat import fill_water3, process_chemical_data  # cheap function refs
 
-# Custom unit operations + chemical helpers come from the aux_compat resolver,
-# which prefers a real aux_chemical / Biosteam_custom_unit module wherever it is
-# dropped and otherwise provides fallback shims.
-from .aux_compat import (  # noqa: F401
-    BatchHeatExchanger,
-    CustomSplitter,
-    Custom_fermenter3,
-    MVR,
-    FreezeDryer2,
-    HIC_Column,
-    IEX_Column,
-    Diafiltration,
-    gel_filtration,
-    SMB_Column,
-    sol_processor,
-    custom_distillation,
-    fill_water3,
-    process_chemical_data,
-)
+bst = None  # populated by _ensure_biosteam()
+tmo = None
+BIOSTEAM_AVAILABLE = None  # None = not yet checked
+
+
+def biosteam_available() -> bool:
+    """Light check (no import cost): is biosteam installed?"""
+    if BIOSTEAM_AVAILABLE is not None:
+        return BIOSTEAM_AVAILABLE
+    try:
+        return _ilu.find_spec("biosteam") is not None and _ilu.find_spec("thermosteam") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ensure_biosteam() -> bool:
+    """Import biosteam/thermosteam on first use; cache the result."""
+    global bst, tmo, BIOSTEAM_AVAILABLE
+    if BIOSTEAM_AVAILABLE is not None:
+        return BIOSTEAM_AVAILABLE
+    try:
+        import biosteam as _b
+        import thermosteam as _t
+        try:
+            _b.Stream.display_units.flow = "kg/hr"
+        except Exception:  # noqa: BLE001
+            pass
+        bst, tmo, BIOSTEAM_AVAILABLE = _b, _t, True
+    except Exception:  # noqa: BLE001
+        bst, tmo, BIOSTEAM_AVAILABLE = None, None, False
+    return BIOSTEAM_AVAILABLE
 
 
 def _log(state, *args):
@@ -59,7 +68,7 @@ def _log(state, *args):
 
 
 def _require_biosteam():
-    if not BIOSTEAM_AVAILABLE:
+    if not _ensure_biosteam():
         raise RuntimeError(
             "biosteam/thermosteam are not installed in this environment; "
             "the calculation pipeline cannot run. Install the process "
@@ -112,6 +121,20 @@ def run_biosteam2(state, nodes, edges, solutions, feat_data, batch_time):
     4. Connect other units
     """
     _require_biosteam()
+    # Resolve the custom unit operations lazily (first access imports them).
+    BatchHeatExchanger = aux_compat.BatchHeatExchanger
+    CustomSplitter = aux_compat.CustomSplitter
+    Custom_fermenter3 = aux_compat.Custom_fermenter3
+    MVR = aux_compat.MVR
+    FreezeDryer2 = aux_compat.FreezeDryer2
+    HIC_Column = aux_compat.HIC_Column
+    IEX_Column = aux_compat.IEX_Column
+    Diafiltration = aux_compat.Diafiltration
+    gel_filtration = aux_compat.gel_filtration
+    SMB_Column = aux_compat.SMB_Column
+    sol_processor = aux_compat.sol_processor
+    custom_distillation = aux_compat.custom_distillation
+
     bst.main_flowsheet.clear()
     Stream_data = {}
     Solution_data = {}
@@ -310,6 +333,7 @@ def run_biosteam2(state, nodes, edges, solutions, feat_data, batch_time):
 
 
 def scale_up_system(state, ferm_sys, main_product, target_amount, nodes):
+    _require_biosteam()
     # 1. Define product stream
     pid = [node["content"] for i, node in nodes.items() if node["node_type"] == "Product Stream"]
     product_stream = [bst.main_flowsheet.stream[i] for i in pid]

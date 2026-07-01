@@ -4,12 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TEA-Agent Platform v9.0</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- Vendored locally so the app has no external CDN dependency (works in
+     network-restricted deployments; avoids blocking on unreachable CDNs). -->
+<link rel="stylesheet" href="/static/tailwind.css">
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/xlsx.full.min.js"></script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap');
-  * { font-family: 'Noto Sans KR', -apple-system, sans-serif; }
+  * { font-family: 'Noto Sans KR', -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
   :root { --green: #006600; --green-light: #e8f5e8; --green-mid: #4a9e4a; }
   .tab-active { border-bottom: 3px solid var(--green); color: var(--green); background: var(--green-light); font-weight: 700; }
   .tab-inactive { border-bottom: 3px solid transparent; color: #64748b; }

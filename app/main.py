@@ -71,6 +71,11 @@ def index(request: Request, response: Response, state=Depends(get_state)):
     return templates.TemplateResponse(request, "index.html")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
+
+
 # ---------------------------------------------------------------------------
 # Chemicals
 # ---------------------------------------------------------------------------
@@ -261,7 +266,7 @@ def bfd_delete_edge(edge_id: str, state=Depends(get_state)):
 
 @app.get("/api/biosteam/status")
 def biosteam_status():
-    return {"available": ub.BIOSTEAM_AVAILABLE}
+    return {"available": ub.biosteam_available()}
 
 
 @app.get("/api/biosteam/defaults")

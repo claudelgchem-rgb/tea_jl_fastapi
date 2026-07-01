@@ -18,7 +18,6 @@ from typing import Any, Dict, List
 from . import default_data
 from .flow_models import FlowEdge, FlowNode, FlowState
 from .flow_tabs import util_bfd
-from .flow_tabs import util_biosteam as ub
 
 DATA_DIR = os.environ.get("TEA_DATA_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -33,12 +32,24 @@ def load_all_unit_defaults() -> Dict[str, Any]:
     return default_data.all_unit_defaults()
 
 
-def set_chemicals(state, chem_data: Dict[str, Dict[str, Any]]) -> None:
-    """Store the chemical table and derived lists (replaces ``upload_chemical2``)."""
-    chemicals, chem_data = ub.process_chemical_data(chem_data)
-    state.chemicals = chemicals
+def set_chemicals(state, chem_data: Dict[str, Dict[str, Any]], build_thermo: bool = False) -> None:
+    """Store the chemical table and derived lists (replaces ``upload_chemical2``).
+
+    ``build_thermo=False`` (default) just records the table -- fast and free of
+    the biosteam/thermosteam import cost, which is what session init and the
+    chemical-DB endpoints need.  ``build_thermo=True`` additionally builds the
+    thermosteam chemicals and registers the default thermo; only the simulation
+    path needs that.
+    """
     state.chem_data = chem_data
     state.chemical_list = list(chem_data.get("Price (USD/kg)", {}).keys())
+    state.chemicals = []
+    if build_thermo:
+        from .flow_tabs.aux_compat import process_chemical_data
+        chemicals, chem_data = process_chemical_data(chem_data)
+        state.chemicals = chemicals
+        state.chem_data = chem_data
+        state.chemical_list = list(chem_data.get("Price (USD/kg)", {}).keys())
 
 
 def add_chemical(state, name: str, formula: str = "", price: float = 0.0, phase: str = "l") -> None:

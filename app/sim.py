@@ -109,7 +109,7 @@ def _build_state(payload: Dict[str, Any]) -> SessionState:
         chem_data["Price (USD/kg)"][name] = float(c.get("price", 0) or 0)
         chem_data["Phase"][name] = c.get("phase", "l") or "l"
     if chem_data["Price (USD/kg)"]:
-        data.set_chemicals(state, chem_data)
+        data.set_chemicals(state, chem_data, build_thermo=True)
 
     # Solutions.
     try:
@@ -183,7 +183,7 @@ def _stream_view(stream) -> Dict[str, Any]:
 
 def simulate(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Run the full pipeline and return the v9 cost breakdown (or an error)."""
-    if not ub.BIOSTEAM_AVAILABLE:
+    if not ub._ensure_biosteam():
         return {"success": False, "error": "biosteam/thermosteam not installed",
                 "unit_hint": "install biosteam to enable simulation"}
     try:

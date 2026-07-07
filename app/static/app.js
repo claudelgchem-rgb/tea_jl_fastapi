@@ -667,136 +667,125 @@ function initBFD(){
   };
 }
 
-function renderNodePropsPanel(nodeId){
+// --- Node property editor: uses the v1 rich schema (render) + process endpoint ---
+let _NODEEDIT=null;   // {nodeId}
+let _NETABLES={};     // tableKey -> {columns, tid}
+
+async function renderNodePropsPanel(nodeId){
   const panel=document.getElementById('bfd-props-panel');if(!panel)return;
-  if(!nodeId){panel.innerHTML='<div class="text-xs text-gray-400">노드를 선택하세요<br><br><b>Shift+드래그</b>로 연결선 추가<br>클릭으로 선택·편집</div>';return;}
+  if(!nodeId){panel.innerHTML='<div class="text-xs text-gray-400">노드를 선택하세요<br><br><b>Shift+드래그</b>로 연결선 추가<br>클릭으로 선택·편집</div>';_NODEEDIT=null;return;}
   const node=STATE.bfdNodes.find(n=>n.id===nodeId);if(!node)return;
+  panel.innerHTML='<div class="text-xs text-gray-400">불러오는 중…</div>';
+  let schema;
+  try{const r=await fetch('/api/bfd/node/'+encodeURIComponent(nodeId)+'/schema');schema=await r.json();if(schema.detail)throw new Error(schema.detail);}
+  catch(e){panel.innerHTML='<div class="text-xs" style="color:#dc2626">스키마 로드 실패: '+esc(e.message||e)+'</div>';return;}
+  _NODEEDIT={nodeId};_NETABLES={};
   const color=bfdNodeColor(node.node_type);
-  const nt=STATE.bfdNodeTypes[node.node_type];
-  let h=`<div class="font-bold text-sm mb-2" style="color:${color}">⬢ ${esc(node.node_type)}</div>`;
-  h+=`<div class="text-xs text-gray-500 mb-1">Name</div><input id="bfd-lbl" class="input-field mb-2" value="${esc(node.label)}">`;
-
-  if(nt&&nt.params){
-    const paramKeys=Object.keys(nt.params);
-    if(paramKeys.length){
-      h+='<div class="text-xs font-bold mb-1" style="color:'+color+'">파라미터</div>';
-      h+='<div style="max-height:400px;overflow-y:auto">';
-      paramKeys.forEach(k=>{
-        const pinfo=nt.params[k];
-        const val=(node.params&&node.params[k]!==undefined)?node.params[k]:(pinfo.default!==undefined?pinfo.default:'');
-        const ptype=pinfo.type||'text';
-
-        if(ptype==='dict'){
-          const dictVal=(typeof val==='object'&&val!==null)?val:(pinfo.default||{});
-          h+=`<div class="mb-2"><div class="flex items-center gap-1"><span class="text-xs text-gray-500">${esc(k)}</span><button class="text-xs px-1 rounded" style="background:#e5e7eb;border:none;cursor:pointer;font-size:9px" onclick="addDictEntry('${nodeId}','${k}')">+</button></div>`;
-          const entries=Object.entries(dictVal);
-          if(entries.length){
-            entries.forEach(([dk,dv])=>{
-          let keyHtml;
-          if(STATE.chemList.length&&(k.includes('conc')||k.includes('split')||k.includes('mass')||k.includes('Concentration')||k.includes('separation'))){
-            keyHtml='<select class="input-field text-xs" style="width:80px;padding:2px 4px" onchange="renameDictKey(\''+nodeId+'\',\''+k+'\',\''+esc(dk)+'\',this.value)">';
-            STATE.chemList.forEach(c=>{keyHtml+='<option value="'+esc(c.name)+'"'+(c.name===dk?' selected':'')+'>'+esc(c.name)+'</option>';});
-            keyHtml+='</select>';
-          }else{
-            keyHtml='<input class="input-field text-xs" style="width:70px;padding:2px 4px" value="'+esc(dk)+'" onchange="renameDictKey(\''+nodeId+'\',\''+k+'\',\''+esc(dk)+'\',this.value)">';
-          }
-          h+=`<div class="flex gap-1 items-center mt-1">${keyHtml}<input class="input-field text-xs" style="width:60px;padding:2px 4px" type="number" value="${dv}" step="any" onchange="setBFDDictParam('${nodeId}','${k}','${esc(dk)}',parseFloat(this.value))"><button style="color:#dc2626;cursor:pointer;border:none;background:none;font-size:9px" onclick="delDictEntry('${nodeId}','${k}','${esc(dk)}')">×</button></div>`;
-            });
-          }else{
-            h+='<div class="text-xs text-gray-300 mt-1">(비어있음)</div>';
-          }
-          h+='</div>';
-        }else if(ptype==='list'){
-          h+=`<div class="mb-2"><span class="text-xs text-gray-500">${esc(k)}</span><textarea class="input-field text-xs" style="height:40px;font-size:10px" onchange="setBFDParam('${nodeId}','${k}',JSON.parse(this.value||'[]'))">${esc(JSON.stringify(val))}</textarea></div>`;
-        }else if(ptype==='bool'){
-          h+=`<div class="flex items-center gap-2 mb-1"><label class="text-xs text-gray-500 flex items-center gap-1"><input type="checkbox" ${val?'checked':''} onchange="setBFDParam('${nodeId}','${k}',this.checked)"> ${esc(k)}</label></div>`;
-        }else{
-          h+=`<div class="flex items-center gap-1 mb-1"><span class="text-xs text-gray-500" style="width:55%;font-size:10px">${esc(k)}</span><input class="input-field text-xs" style="padding:2px 4px" type="${ptype==='number'?'number':'text'}" step="any" value="${esc(String(val))}" onchange="setBFDParam('${nodeId}','${k}',${ptype==='number'?'parseFloat(this.value)||0':'this.value'})"></div>`;
-        }
-      });
-      h+='</div>';
-    }
-  }
-
-  if(node.node_type==='발효기'){
-    h+='<div class="mt-2 p-2 rounded" style="background:#fef3c7;border:1px solid #fde68a">';
-    h+='<div class="text-xs font-bold mb-1" style="color:#92400e">⚗ 용액 불러오기</div>';
-    if(STATE.solList.length){
-      h+='<div class="grid gap-1">';
-      STATE.solList.forEach(sol=>{
-        const already=(node.params.solutions||[]).find(s=>s.name===sol.user_name);
-        h+='<div class="flex items-center gap-1 text-xs">';
-        h+='<button class="px-2 py-0.5 rounded" style="background:'+(already?'#dcfce7;color:#15803d':'#fff;color:#92400e')+';border:1px solid '+(already?'#86efac':'#fde68a')+';cursor:pointer;font-size:10px" onclick="importOneSolToFermNode(\''+nodeId+'\',\''+esc(sol.id)+'\')">'+(already?'✓':'+')+'</button>';
-        h+='<span>'+esc(sol.user_name)+'</span>';
-        h+='</div>';
-      });
-      h+='</div>';
-    }else{
-      h+='<div class="text-xs text-gray-400">용액 관리에서 먼저 용액을 등록하세요.</div>';
-    }
-    h+='</div>';
-  }
-
-  h+=`<div class="flex gap-2 mt-3"><button class="btn-primary text-xs flex-1" onclick="saveBFDNodeLabel('${nodeId}')">💾 저장</button><button class="btn-danger" onclick="deleteBFDNode('${nodeId}')">삭제</button></div>`;
+  let h=`<div class="font-bold text-sm mb-2" style="color:${color}">⬢ ${esc(schema.node_type||node.node_type)}</div>`;
+  h+=`<div class="text-xs text-gray-500 mb-1">Name</div><input id="ne-name" class="input-field mb-2" value="${esc(schema.name||node.label||'')}">`;
+  h+='<div style="max-height:440px;overflow-y:auto">';
+  (schema.groups||[]).forEach((g,gi)=>{h+=neGroup(g,'g'+gi);});
+  h+='</div>';
+  h+=`<div class="flex gap-2 mt-3"><button class="btn-primary text-xs flex-1" onclick="saveNodeEdit()">💾 저장 (처리)</button><button class="btn-danger" onclick="deleteBFDNode('${nodeId}')">삭제</button></div>`;
   panel.innerHTML=h;
 }
-function setBFDParam(nodeId,key,val){const n=STATE.bfdNodes.find(x=>x.id===nodeId);if(n){if(!n.params)n.params={};n.params[key]=val;}}
-function setBFDDictParam(nodeId,key,dk,dv){const n=STATE.bfdNodes.find(x=>x.id===nodeId);if(n&&n.params){if(!n.params[key]||typeof n.params[key]!=='object')n.params[key]={};n.params[key][dk]=dv;}}
-function addDictEntry(nodeId,key){
-  const n=STATE.bfdNodes.find(x=>x.id===nodeId);if(!n)return;
-  if(!n.params[key]||typeof n.params[key]!=='object')n.params[key]={};
-  const existing=Object.keys(n.params[key]);
-  const panel=document.getElementById('bfd-props-panel');if(!panel)return;
-  let selHtml='<div id="dict-add-overlay" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255,255,255,0.95);z-index:10;padding:12px;display:flex;flex-direction:column;gap:8px">';
-  selHtml+='<div class="text-xs font-bold" style="color:var(--green)">화학물질 추가 - '+esc(key)+'</div>';
-  selHtml+='<select id="dict-add-sel" class="input-field text-xs">';
-  if(STATE.chemList.length){
-    STATE.chemList.filter(c=>!existing.includes(c.name)).forEach(c=>{
-      selHtml+='<option value="'+esc(c.name)+'">'+esc(c.name)+' ($'+c.price+'/kg)</option>';
-    });
+
+function neGroup(g,gid){
+  const open=g.advanced?'':' open';
+  let h=`<details${open} style="border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;margin:6px 0"><summary class="text-xs font-bold" style="color:#15803d;cursor:pointer">${esc(g.title)}</summary>`;
+  (g.fields||[]).forEach((f,fi)=>{h+= f.fields ? neGroup(f,gid+'_'+fi) : neField(f,gid+'_'+fi);});
+  h+='</details>';
+  return h;
+}
+
+function neField(f,fid){
+  if(f.kind==='table')return neTable(f,fid);
+  const id='ne_'+fid;
+  if(f.kind==='bool'){
+    return '<div class="my-1"><label class="flex items-center gap-1 text-xs"><input id="'+id+'" data-nekey="'+esc(f.key)+'" data-nekind="bool" type="checkbox"'+(f.value?' checked':'')+'> '+esc(f.label)+'</label></div>';
   }
-  selHtml+='<option value="__custom__">직접 입력...</option>';
-  selHtml+='</select>';
-  selHtml+='<input id="dict-add-custom" class="input-field text-xs hidden" placeholder="직접 입력">';
-  selHtml+='<div class="flex gap-2"><button class="btn-primary text-xs flex-1" onclick="confirmDictAdd(\''+nodeId+'\',\''+key+'\')">추가</button><button class="btn-secondary text-xs flex-1" onclick="document.getElementById(\'dict-add-overlay\').remove()">취소</button></div>';
-  selHtml+='</div>';
-  panel.style.position='relative';
-  panel.insertAdjacentHTML('beforeend',selHtml);
-  document.getElementById('dict-add-sel').onchange=function(){
-    document.getElementById('dict-add-custom').classList.toggle('hidden',this.value!=='__custom__');
-  };
+  let inner;
+  if(f.kind==='select'){
+    inner='<select id="'+id+'" data-nekey="'+esc(f.key)+'" data-nekind="select" class="input-field text-xs">';
+    (f.options||[]).forEach(o=>{inner+='<option'+(String(o)===String(f.value)?' selected':'')+'>'+esc(o)+'</option>';});
+    inner+='</select>';
+  }else{
+    const t=(f.kind==='number'||f.kind==='int')?'number':'text';
+    inner='<input id="'+id+'" data-nekey="'+esc(f.key)+'" data-nekind="'+f.kind+'" type="'+t+'" step="any" value="'+esc(f.value==null?'':String(f.value))+'" class="input-field text-xs">';
+  }
+  return '<div class="my-1"><div class="text-gray-500" style="font-size:10px">'+esc(f.label)+'</div>'+inner+'</div>';
 }
-function confirmDictAdd(nodeId,key){
-  const sel=document.getElementById('dict-add-sel');
-  const custom=document.getElementById('dict-add-custom');
-  let newKey=sel.value==='__custom__'?custom.value:sel.value;
-  if(!newKey)return;
-  const n=STATE.bfdNodes.find(x=>x.id===nodeId);
-  if(n&&n.params){n.params[key][newKey]=0;}
-  renderNodePropsPanel(nodeId);
+
+function neTable(f,fid){
+  const tid='netbl_'+fid;
+  _NETABLES[f.key]={columns:f.columns,tid:tid};
+  let h='<div class="my-1"><div class="font-bold" style="font-size:10px;color:#6d28d9">'+esc(f.label)+'</div>';
+  h+='<table class="w-full text-xs" style="border-collapse:collapse"><thead><tr>';
+  (f.columns||[]).forEach(c=>{h+='<th style="border:1px solid #e5e7eb;padding:1px 3px;font-size:9px">'+esc(c.name)+'</th>';});
+  h+='<th></th></tr></thead><tbody id="'+tid+'">';
+  (f.rows||[]).forEach(r=>{h+=neRow(f.key,r);});
+  h+='</tbody></table>';
+  h+='<button class="text-xs px-2 rounded mt-1" style="background:#e5e7eb;border:none;cursor:pointer" onclick="neAddRow(\''+esc(f.key)+'\')">+ 행</button></div>';
+  return h;
 }
-function delDictEntry(nodeId,key,dk){const n=STATE.bfdNodes.find(x=>x.id===nodeId);if(n&&n.params&&n.params[key])delete n.params[key][dk];renderNodePropsPanel(nodeId);}
-function renameDictKey(nodeId,key,oldK,newK){const n=STATE.bfdNodes.find(x=>x.id===nodeId);if(n&&n.params&&n.params[key]){const v=n.params[key][oldK];delete n.params[key][oldK];n.params[key][newK]=v;}}
-function importOneSolToFermNode(nodeId,solId){
-  const n=STATE.bfdNodes.find(x=>x.id===nodeId);if(!n)return;
-  const sol=STATE.solList.find(s=>s.id===solId);if(!sol)return;
-  if(!n.params.solutions)n.params.solutions=[];
-  n.params.solutions=n.params.solutions.filter(s=>s.name!==sol.user_name);
-  const comps=(sol.components||[]).map(c=>{
-    const dbChem=STATE.chemList.find(ch=>ch.name===c.name);
-    return{chemical:c.name,conc_g_per_L:c.concentration_g_per_l||0,price_usd_per_kg:dbChem?dbChem.price:0};
+
+function neRow(key,row){
+  const cols=_NETABLES[key].columns; row=row||{};
+  let h='<tr>';
+  cols.forEach(c=>{
+    h+='<td style="border:1px solid #e5e7eb;padding:1px">';
+    if(c.type==='select'){
+      const opts=(c.options&&c.options.length)?c.options:STATE.chemList.map(x=>x.name);
+      h+='<select class="input-field text-xs" data-necol="'+esc(c.name)+'" style="padding:1px;font-size:10px"><option value=""></option>';
+      opts.forEach(o=>{h+='<option'+(String(row[c.name])===String(o)?' selected':'')+'>'+esc(o)+'</option>';});
+      h+='</select>';
+    }else{
+      const t=c.type==='number'?'number':'text';
+      h+='<input class="input-field text-xs" data-necol="'+esc(c.name)+'" type="'+t+'" step="any" value="'+esc(row[c.name]==null?'':String(row[c.name]))+'" style="padding:1px;font-size:10px;width:64px">';
+    }
+    h+='</td>';
   });
-  n.params.solutions.push({name:sol.user_name,volume_L:1,components:comps});
-  if(!n.params.stream_flow)n.params.stream_flow={};
-  n.params.stream_flow[sol.user_name]={};
-  comps.forEach(c=>{n.params.stream_flow[sol.user_name][c.chemical]=(c.conc_g_per_L||0)/1000;});
-  renderNodePropsPanel(nodeId);
+  h+='<td><button style="color:#dc2626;border:none;background:none;cursor:pointer;font-size:10px" onclick="this.closest(\'tr\').remove()">×</button></td></tr>';
+  return h;
 }
-async function saveBFDNodeLabel(nodeId){
-  const n=STATE.bfdNodes.find(x=>x.id===nodeId);const lbl=document.getElementById('bfd-lbl');
-  if(n&&lbl){n.label=lbl.value;}
-  await fetch('/api/bfd/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nodes:STATE.bfdNodes,edges:STATE.bfdEdges})});
-  initBFD();renderNodePropsPanel(nodeId);
+
+function neAddRow(key){
+  const t=document.getElementById(_NETABLES[key].tid);if(t)t.insertAdjacentHTML('beforeend',neRow(key,{}));
+}
+
+async function saveNodeEdit(){
+  if(!_NODEEDIT)return;
+  const nodeId=_NODEEDIT.nodeId, value={};
+  document.querySelectorAll('#bfd-props-panel [data-nekey]').forEach(el=>{
+    const key=el.getAttribute('data-nekey'), kind=el.getAttribute('data-nekind');
+    if(kind==='bool')value[key]=el.checked;
+    else if(kind==='number')value[key]=parseFloat(el.value)||0;
+    else if(kind==='int')value[key]=parseInt(el.value||'0',10)||0;
+    else value[key]=el.value;
+  });
+  Object.keys(_NETABLES).forEach(key=>{
+    const t=document.getElementById(_NETABLES[key].tid);if(!t)return;
+    const cols=_NETABLES[key].columns, rows=[];
+    t.querySelectorAll('tr').forEach(tr=>{
+      const row={}; let has=false;
+      tr.querySelectorAll('[data-necol]').forEach(el=>{
+        const cn=el.getAttribute('data-necol'), col=cols.find(c=>c.name===cn);
+        let v=el.value; if(col&&col.type==='number')v=parseFloat(v)||0;
+        row[cn]=v; if(cn===cols[0].name && v!=='' && v!=null)has=true;
+      });
+      if(has)rows.push(row);
+    });
+    value[key]=rows;
+  });
+  const name=document.getElementById('ne-name').value;
+  try{
+    const r=await fetch('/api/bfd/node/'+encodeURIComponent(nodeId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value})});
+    const d=await r.json(); if(d.detail)throw new Error(d.detail);
+    const n=STATE.bfdNodes.find(x=>x.id===nodeId); if(n&&d.node){n.params=d.node.params;n.label=d.node.label;}
+    await fetch('/api/bfd/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nodes:STATE.bfdNodes,edges:STATE.bfdEdges})});
+    initBFD(); renderNodePropsPanel(nodeId);
+    alert('노드 저장 및 처리 완료');
+  }catch(e){alert('저장 실패: '+(e.message||e));}
 }
 
 document.addEventListener('mousemove',ev=>{

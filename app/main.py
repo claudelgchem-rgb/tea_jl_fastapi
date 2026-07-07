@@ -21,6 +21,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from . import data, default_data, sim
+from .flow_models import FlowNode
+from .flow_tabs import util_bfd
 from .flow_tabs import util_biosteam as ub
 from .session import store
 
@@ -223,6 +225,74 @@ def bfd_add_node(node: NodeIn, state=Depends(get_state)):
            "x": node.x, "y": node.y, "params": sim.default_node_params(node.node_type)}
     state.bfd_nodes.append(new)
     return {"node": new}
+
+
+def _sync_solutions(state) -> None:
+    """Build ``state.solutions`` / ``autoclave`` / ``prices`` from the v9
+    ``ui_solutions`` list, so node schemas (solution dropdowns) and the v1
+    ``process_*_data`` functions (fill_water3, fermenter stream_flow) see the
+    user's registered solutions.
+    """
+    from .flow_tabs.aux_compat import fill_water3
+
+    solutions, autoclave, prices = {}, {}, {}
+    price_col = state.chem_data.get("Price (USD/kg)", {}) if isinstance(state.chem_data, dict) else {}
+    for sol in state.get("ui_solutions", []) or []:
+        name = sol.get("user_name") or sol.get("name")
+        if not name:
+            continue
+        comp = {c.get("name"): float(c.get("concentration_g_per_l", 0) or 0)
+                for c in sol.get("components", []) or [] if c.get("name")}
+        comp = fill_water3(comp, 1)
+        solutions[name] = comp
+        autoclave[name] = bool(sol.get("autoclave", True))
+        prices[name] = sum(m * float(price_col.get(ch, 0) or 0) for ch, m in comp.items())
+    solutions.setdefault("Water", {"Water": 1000})
+    autoclave.setdefault("Water", False)
+    prices.setdefault("Water", float(price_col.get("Water", 0) or 0))
+    state.solutions, state.autoclave, state.prices = solutions, autoclave, prices
+
+
+def _v9_node_to_flownode(n) -> FlowNode:
+    return FlowNode(id=n["id"], pos=(n.get("x", 0), n.get("y", 0)),
+                    data={"node_type": n.get("node_type"), "content": n.get("label"),
+                          "custom_value": n.get("label"), "Value": n.get("params", {}) or {}})
+
+
+def _find_v9_node(state, node_id):
+    for n in state.bfd_nodes:
+        if n["id"] == node_id:
+            return n
+    raise HTTPException(404, "node not found")
+
+
+class NodeEditIn(BaseModel):
+    name: str
+    value: Dict[str, Any]
+
+
+@app.get("/api/bfd/node/{node_id}/schema")
+def bfd_node_schema(node_id: str, state=Depends(get_state)):
+    """Rich v1 form schema (groups/number/select/table fields) for a node."""
+    _sync_solutions(state)
+    fn = _v9_node_to_flownode(_find_v9_node(state, node_id))
+    return util_bfd.build_node_schema(state, fn)
+
+
+@app.post("/api/bfd/node/{node_id}")
+def bfd_edit_node(node_id: str, req: NodeEditIn, state=Depends(get_state)):
+    """Save a node edit through v1's ``process_*_data`` (computes in_mass /
+    out_mass / stream_flow, fills water, etc.) and store the processed Value."""
+    _sync_solutions(state)
+    n = _find_v9_node(state, node_id)
+    fn = _v9_node_to_flownode(n)
+    if "flow_state" not in state:
+        from .flow_models import FlowState
+        state.flow_state = FlowState()
+    util_bfd.apply_node_edit(state, fn, req.name, req.value)
+    n["label"] = req.name
+    n["params"] = fn.data["Value"]
+    return {"node": n}
 
 
 @app.delete("/api/bfd/node/{node_id}")

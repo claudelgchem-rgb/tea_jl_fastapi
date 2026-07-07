@@ -56,10 +56,44 @@ def _install_streamlit_stub() -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    st = types.ModuleType("streamlit")
+    class _NoOp:
+        """Universal no-op: callable, context manager, indexable, attr-chainable.
+
+        Custom unit modules ``import streamlit as st`` for debug output; under
+        this stub any ``st.*`` access (``st.write(...)``, ``st.session_state.x``,
+        ``with st.expander(...)``, ``st.column_config.TextColumn(...)`` ...) is a
+        harmless no-op so the modules import and run headlessly.
+        """
+
+        def __call__(self, *a, **k):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def __getattr__(self, name):
+            return self
+
+        def __getitem__(self, k):
+            return self
+
+        def __setitem__(self, k, v):
+            pass
+
+        def __iter__(self):
+            return iter(())
+
+        def __bool__(self):
+            return False
+
+    _noop = _NoOp()
 
     def _decorator(*args, **kwargs):
-        # supports both @st.fragment and @st.cache_resource(ttl=...)
+        # Real pass-through decorator so @st.fragment / @st.cache_resource(...)
+        # keep the wrapped function intact (the catch-all would replace it).
         if len(args) == 1 and callable(args[0]) and not kwargs:
             return args[0]
 
@@ -68,30 +102,16 @@ def _install_streamlit_stub() -> None:
 
         return wrap
 
+    class _StreamlitStub(types.ModuleType):
+        def __getattr__(self, name):  # anything not set explicitly -> no-op
+            return _noop
+
+    st = _StreamlitStub("streamlit")
     st.fragment = _decorator
     st.cache_resource = _decorator
     st.cache_data = _decorator
-
-    class _SessionState(dict):
-        def __getattr__(self, k):
-            try:
-                return self[k]
-            except KeyError as exc:
-                raise AttributeError(k) from exc
-
-        def __setattr__(self, k, v):
-            self[k] = v
-
-    st.session_state = _SessionState()
-    for _fn in ("write", "button", "file_uploader", "data_editor", "rerun",
-                "warning", "info", "error", "text_input", "number_input",
-                "selectbox", "checkbox", "columns", "expander", "form",
-                "form_submit_button", "divider", "subheader", "header"):
-        setattr(st, _fn, lambda *a, **k: None)
-    st.column_config = types.SimpleNamespace(
-        TextColumn=lambda *a, **k: None, NumberColumn=lambda *a, **k: None,
-        SelectboxColumn=lambda *a, **k: None, CheckboxColumn=lambda *a, **k: None,
-    )
+    st.session_state = _noop
+    st.column_config = _noop
     sys.modules["streamlit"] = st
 
 

@@ -23,12 +23,19 @@ DATA_DIR = os.environ.get("TEA_DATA_DIR", os.path.join(os.path.dirname(os.path.d
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
+# Where the packaged ``initial_val.json`` lives (app/data/), preferred over the
+# built-in defaults in default_data.py.
+APP_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+
 def load_all_unit_defaults() -> Dict[str, Any]:
-    """Read ``initial_val.json`` from the data dir, else use built-in defaults."""
-    path = os.path.join(DATA_DIR, "initial_val.json")
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
+    """Read the real ``initial_val.json`` (app/data/ or the scenario data dir),
+    falling back to the built-in defaults in default_data.py."""
+    for path in (os.path.join(DATA_DIR, "initial_val.json"),
+                 os.path.join(APP_DATA_DIR, "initial_val.json")):
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
     return default_data.all_unit_defaults()
 
 
@@ -98,8 +105,14 @@ def init_session(state) -> None:
     state.prices = {"Water": float(state.chem_data["Price (USD/kg)"]["Water"])}
 
     cl = state.chemical_list
-    state.main_product = cl[tmp["product_index"]] if tmp["product_index"] < len(cl) else cl[0]
-    state.main_source = cl[tmp["source_index"]] if tmp["source_index"] < len(cl) else cl[0]
+    def _idx(key, default_name):
+        i = tmp.get(key)
+        if isinstance(i, int) and 0 <= i < len(cl):
+            return cl[i]
+        return default_name if default_name in cl else (cl[0] if cl else "")
+
+    state.main_product = _idx("product_index", "Collagen")
+    state.main_source = _idx("source_index", "Glucose")
 
     util_bfd.initialize_flowstate(state)
 
@@ -151,8 +164,16 @@ def load_scenario(state, template: str) -> None:
     set_chemicals(state, raw["chem_data"])
     state.heat_utility = raw.get("heat_utility", {})
     state.currency = state.tmp.get("currency", 1500)
-    state.main_product = raw.get("main_product", state.chemical_list[state.tmp["product_index"]])
-    state.main_source = raw.get("main_source", state.chemical_list[state.tmp["source_index"]])
+    cl = state.chemical_list
+
+    def _idx(key, default_name):
+        i = state.tmp.get(key)
+        if isinstance(i, int) and 0 <= i < len(cl):
+            return cl[i]
+        return default_name if default_name in cl else (cl[0] if cl else "")
+
+    state.main_product = raw.get("main_product") or _idx("product_index", "Collagen")
+    state.main_source = raw.get("main_source") or _idx("source_index", "Glucose")
     state.target_amount = raw.get("target_amount", state.tmp["target_amount"])
     state.gmp = raw.get("gmp", state.get("gmp", True))
     state.operating_hours = raw.get("operating_hours", state.tmp.get("operating_hours", 7920))

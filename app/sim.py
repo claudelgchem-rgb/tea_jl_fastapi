@@ -66,13 +66,19 @@ def _param_type(v: Any) -> str:
     return "text"
 
 
+def _node_feature_defaults() -> Dict[str, Any]:
+    """Addable-node initial Values, preferring the real initial_val.json
+    (node_features) and falling back to the built-in per-unit defaults."""
+    nf = data.load_all_unit_defaults().get("node_features") or {}
+    return nf if nf else dict(_UNIT_DEFAULTS)
+
+
 def node_types() -> Dict[str, Any]:
     """Return {type: {icon, color, params:{key:{type, default}}}} for the palette."""
     out: Dict[str, Any] = {}
-    for ntype, defaults in _UNIT_DEFAULTS.items():
-        params = {}
-        for k, v in defaults.items():
-            params[k] = {"type": _param_type(v), "default": copy.deepcopy(v)}
+    for ntype, defaults in _node_feature_defaults().items():
+        defaults = defaults or {}
+        params = {k: {"type": _param_type(v), "default": copy.deepcopy(v)} for k, v in defaults.items()}
         out[ntype] = {
             "icon": util_bfd.get_emoji(ntype),
             "color": NODE_COLORS.get(ntype, "#94a3b8"),
@@ -82,6 +88,9 @@ def node_types() -> Dict[str, Any]:
 
 
 def default_node_params(ntype: str) -> Dict[str, Any]:
+    nf = _node_feature_defaults()
+    if ntype in nf:
+        return copy.deepcopy(nf[ntype] or {})
     return copy.deepcopy(_UNIT_DEFAULTS.get(ntype, {}))
 
 

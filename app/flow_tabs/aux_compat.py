@@ -102,6 +102,15 @@ def _install_streamlit_stub() -> None:
 
         return wrap
 
+    class _SessionState(dict):
+        # Real, writable session_state so headless code can read values the
+        # host sets (e.g. custom units reading ``st.session_state.od_to_dcw``).
+        def __getattr__(self, k):
+            return self.get(k)
+
+        def __setattr__(self, k, v):
+            self[k] = v
+
     class _StreamlitStub(types.ModuleType):
         def __getattr__(self, name):  # anything not set explicitly -> no-op
             return _noop
@@ -110,9 +119,28 @@ def _install_streamlit_stub() -> None:
     st.fragment = _decorator
     st.cache_resource = _decorator
     st.cache_data = _decorator
-    st.session_state = _noop
+    st.session_state = _SessionState()
     st.column_config = _noop
     sys.modules["streamlit"] = st
+
+
+def set_session_values(**values):
+    """Populate the (stub or real) ``streamlit.session_state`` for headless runs.
+
+    Custom unit modules read a few values from ``st.session_state`` (e.g.
+    ``od_to_dcw``).  In the FastAPI app there is no Streamlit runtime, so the
+    simulation layer calls this to inject those values before running.
+    """
+    _install_streamlit_stub()
+    try:
+        import streamlit as _st
+        for k, v in values.items():
+            try:
+                _st.session_state[k] = v
+            except Exception:  # noqa: BLE001
+                setattr(_st.session_state, k, v)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _install_chempy_stub() -> None:

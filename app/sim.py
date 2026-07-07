@@ -188,6 +188,14 @@ def simulate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "unit_hint": "install biosteam to enable simulation"}
     try:
         state = _build_state(payload)
+        # Custom units read a few values from streamlit's session_state; inject
+        # them into the (stubbed) session so they work headless.
+        from .flow_tabs import aux_compat
+        aux_compat.set_session_values(
+            od_to_dcw=float(state.get("od_to_dcw", 0.22) or 0.22),
+            operating_hours=float(state.operating_hours),
+            heat_utility=state.heat_utility,
+        )
         bst = ub.bst
         bst.main_flowsheet.clear()
         try:

@@ -135,6 +135,9 @@ HEAT_UTILITY_DEFAULT = {
     "chilled_water": 0.005,
     "wastewater": 0.003,
     "cip_water": 0.001,
+    # CIP acid/base agents used by the fermenter (ferm_sys) cost model.
+    "cip_acid_agent": 0.02,
+    "cip_base_agent": 0.024,
     "resin": 200.0,
     "membrane": 1000.0,
     "hepa_filter": 50.0,

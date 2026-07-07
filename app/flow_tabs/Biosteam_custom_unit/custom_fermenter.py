@@ -261,6 +261,3 @@ class CustomFermenter2(StirredTankReactor):
             pass
         
 
-
-# Alias: the pipeline (util_biosteam.run_biosteam2) constructs "Custom_fermenter3".
-Custom_fermenter3 = CustomFermenter2

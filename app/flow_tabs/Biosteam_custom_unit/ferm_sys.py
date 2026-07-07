@@ -1,9 +1,12 @@
 import biosteam as bst, thermosteam as tmo
-from biosteam.units.stirred_tank_reactor import StirredTankReactor
+try:
+    from biosteam.units.stirred_tank_reactor import StirredTankReactor
+except ModuleNotFoundError:  # biosteam >= 2.5x moved/renamed this module
+    from biosteam.units.abstract_stirred_tank_reactor import StirredTankReactor
 import numpy as np, pandas as pd
 
 import streamlit as st
-from .tmp_reactor2 import CustomFermenter2
+from .custom_fermenter import CustomFermenter2  # class lives in custom_fermenter.py
 
 class Custom_fermenter3(bst.Unit):
     """

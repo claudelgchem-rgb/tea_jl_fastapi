@@ -39,6 +39,64 @@ def load_all_unit_defaults() -> Dict[str, Any]:
     return default_data.all_unit_defaults()
 
 
+_BASE_COLS = ["Name", "Formula", "Price (USD/kg)", "Phase"]
+
+
+def _rows_to_chem_data(rows) -> Dict[str, Dict[str, Any]]:
+    """Convert a list of chemical row-dicts into the dict-of-columns table."""
+    cd = {c: {} for c in _BASE_COLS}
+    for r in rows or []:
+        name = r.get("Name") or r.get("name")
+        if not name:
+            continue
+        cd["Name"][name] = name
+        cd["Formula"][name] = r.get("Formula", r.get("formula", "")) or ""
+        cd["Price (USD/kg)"][name] = float(r.get("Price (USD/kg)", r.get("price", 0)) or 0)
+        cd["Phase"][name] = r.get("Phase", r.get("phase", "l")) or "l"
+    return cd
+
+
+def load_chem_data() -> Dict[str, Dict[str, Any]]:
+    """Load the chemical table from a JSON file if one is provided, else use the
+    built-in starter set.
+
+    Search order: ``$TEA_CHEM_FILE``, then ``app/data/chemicals.json`` /
+    ``chem_data.json`` (and the same names under the scenario data dir).
+
+    Accepted JSON shapes:
+      * dict-of-columns  -> ``{"Name": {...}, "Price (USD/kg)": {...}, ...}``
+      * ``{"chemicals": [ {name, formula, price, phase}, ... ]}``
+      * a bare list of chemical row-dicts
+      * ``{name: {price, formula, phase}, ...}`` mapping
+    """
+    candidates = []
+    env = os.environ.get("TEA_CHEM_FILE")
+    if env:
+        candidates.append(env)
+    for d in (APP_DATA_DIR, DATA_DIR):
+        candidates += [os.path.join(d, "chemicals.json"), os.path.join(d, "chem_data.json")]
+
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:  # noqa: BLE001 - fall through to the next candidate
+            continue
+        if isinstance(raw, dict) and "Price (USD/kg)" in raw:
+            return raw  # already dict-of-columns
+        if isinstance(raw, dict) and isinstance(raw.get("chemicals"), list):
+            return _rows_to_chem_data(raw["chemicals"])
+        if isinstance(raw, list):
+            return _rows_to_chem_data(raw)
+        if isinstance(raw, dict):  # {name: {price, formula, phase}} mapping
+            rows = [{"name": n, **(props if isinstance(props, dict) else {"price": props})}
+                    for n, props in raw.items()]
+            return _rows_to_chem_data(rows)
+    return default_data.starter_chem_data()
+
+
 def set_chemicals(state, chem_data: Dict[str, Dict[str, Any]], build_thermo: bool = False) -> None:
     """Store the chemical table and derived lists (replaces ``upload_chemical2``).
 
@@ -99,10 +157,10 @@ def init_session(state) -> None:
     state.target_amount = tmp.get("target_amount", 0.1)
 
     # Starter chemicals + default solutions.
-    set_chemicals(state, default_data.starter_chem_data())
+    set_chemicals(state, load_chem_data())
     state.solutions = {"Water": {"Water": 1000}}
     state.autoclave = {"Water": False}
-    state.prices = {"Water": float(state.chem_data["Price (USD/kg)"]["Water"])}
+    state.prices = {"Water": float(state.chem_data.get("Price (USD/kg)", {}).get("Water", 0.0) or 0.0)}
 
     cl = state.chemical_list
     def _idx(key, default_name):

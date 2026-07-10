@@ -193,8 +193,15 @@ def _stream_view(stream) -> Dict[str, Any]:
 def simulate(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Run the full pipeline and return the v9 cost breakdown (or an error)."""
     if not ub._ensure_biosteam():
-        return {"success": False, "error": "biosteam/thermosteam not installed",
-                "unit_hint": "install biosteam to enable simulation"}
+        installed = ub.biosteam_installed()
+        return {
+            "success": False,
+            "error": ("biosteam is installed but failed to import"
+                      if installed else "biosteam/thermosteam not installed"),
+            "unit_hint": ("the package imports raised an error — see 상세 below"
+                          if installed else "install biosteam to enable simulation"),
+            "detail": ub.IMPORT_ERROR or "",
+        }
     try:
         state = _build_state(payload)
         # Custom units read a few values from streamlit's session_state; inject
@@ -256,19 +263,41 @@ def _breakdown(state, scaled, target_amount) -> Dict[str, Any]:
         total_feed, source=_CARBON_SOURCES + [state.main_source])
     price_col = state.chem_data["Price (USD/kg)"]
 
-    def per_mt(chem_amounts):
-        return sum(amt * float(price_col.get(ch, 0) or 0) / target_amount * 1000
-                   for ch, amt in chem_amounts.items() if amt)
+    def detail_rows(chem_amounts):
+        """[{chemical, kg_per_mt, price, cost_per_mt}] for feeds that flow.
 
-    raw_material = per_mt(upstream_c)
-    sub_material = per_mt(upstream)
+        ``chem_amounts`` is {chem: kg/yr}; kg_per_mt = kg feed per MT product.
+        """
+        rows = []
+        for ch, amt in chem_amounts.items():
+            if not amt:
+                continue
+            kg_per_mt = amt / target_amount * 1000.0
+            price = float(price_col.get(ch, 0) or 0)
+            rows.append({"chemical": ch, "kg_per_mt": round(kg_per_mt, 3),
+                         "price": price, "cost_per_mt": round(kg_per_mt * price, 2)})
+        rows.sort(key=lambda r: r["cost_per_mt"], reverse=True)
+        return rows
+
+    raw_rows = detail_rows(upstream_c)
+    sub_rows = detail_rows(upstream)
+    raw_material = round(sum(r["cost_per_mt"] for r in raw_rows), 4)
+    sub_material = round(sum(r["cost_per_mt"] for r in sub_rows), 4)
 
     electricity = scaled.power_utility.cost * op / target_amount * 1000
+    # Every utility, not just the three headline buckets, so the UI can show
+    # exactly which utilities the process consumes and how much.
+    util_rows: List[Dict[str, Any]] = []
     steam = cooling = waste = 0.0
+    _agg: Dict[str, Dict[str, float]] = {}
     for huu in scaled.heat_utilities:
-        if huu.flow > 0:
+        if huu.flow and huu.flow > 0:
             cost_mt = huu.cost * op / target_amount * 1000
-            hid = huu.ID
+            hid = huu.ID or "utility"
+            agg = _agg.setdefault(hid, {"cost_per_mt": 0.0, "duty_kJ_per_hr": 0.0, "flow": 0.0})
+            agg["cost_per_mt"] += cost_mt
+            agg["duty_kJ_per_hr"] += float(getattr(huu, "duty", 0) or 0)
+            agg["flow"] += float(huu.flow or 0)
             if hid in _STEAM_IDS:
                 steam += cost_mt
             elif hid in _COOL_IDS:
@@ -277,6 +306,21 @@ def _breakdown(state, scaled, target_amount) -> Dict[str, Any]:
                 waste += cost_mt
             else:
                 sub_material += cost_mt
+    for hid, agg in _agg.items():
+        util_rows.append({
+            "utility": hid,
+            "duty_kJ_per_hr": round(agg["duty_kJ_per_hr"], 1),
+            "flow": round(agg["flow"], 4),
+            "cost_per_mt": round(agg["cost_per_mt"], 2),
+            "category": ("스팀" if hid in _STEAM_IDS else "냉각" if hid in _COOL_IDS
+                         else "폐기물" if hid in _WASTE_IDS else "기타 유틸리티"),
+        })
+    util_rows.append({
+        "utility": "electricity", "duty_kJ_per_hr": None,
+        "flow": round(float(getattr(scaled.power_utility, "rate", 0) or 0), 3),
+        "cost_per_mt": round(electricity, 2), "category": "전기",
+    })
+    util_rows.sort(key=lambda r: r["cost_per_mt"], reverse=True)
 
     capex = scaled.installed_cost * lang_factor * 1.15
     if state.get("gmp", True):
@@ -297,6 +341,9 @@ def _breakdown(state, scaled, target_amount) -> Dict[str, Any]:
         "depreciation": round(depreciation, 1),
         "labor": round(labor, 1),
         "repair": round(repair, 1),
+        "raw_material_detail": raw_rows,
+        "sub_material_detail": sub_rows,
+        "utilities_detail": util_rows,
         "logic": {
             "batch_time_h": round(ub.get_batch_time({n.id: n.data for n in state.flow_state.nodes}), 2),
             "target_kg_per_yr": target_amount,

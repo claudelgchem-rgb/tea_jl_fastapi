@@ -29,21 +29,30 @@ from .aux_compat import fill_water3, process_chemical_data  # cheap function ref
 bst = None  # populated by _ensure_biosteam()
 tmo = None
 BIOSTEAM_AVAILABLE = None  # None = not yet checked
+IMPORT_ERROR = None  # traceback string when the import actually failed
 
 
-def biosteam_available() -> bool:
-    """Light check (no import cost): is biosteam installed?"""
-    if BIOSTEAM_AVAILABLE is not None:
-        return BIOSTEAM_AVAILABLE
+def biosteam_installed() -> bool:
+    """Light check (no import cost): is the package present on sys.path?"""
     try:
         return _ilu.find_spec("biosteam") is not None and _ilu.find_spec("thermosteam") is not None
     except Exception:  # noqa: BLE001
         return False
 
 
+def biosteam_available() -> bool:
+    """Authoritative check: can biosteam actually be imported?
+
+    Runs the real import (cached) so the UI badge reflects reality instead of
+    just "the package directory exists".  If the import raises, the reason is
+    captured in ``IMPORT_ERROR`` so the frontend can show *why* it failed.
+    """
+    return _ensure_biosteam()
+
+
 def _ensure_biosteam() -> bool:
     """Import biosteam/thermosteam on first use; cache the result."""
-    global bst, tmo, BIOSTEAM_AVAILABLE
+    global bst, tmo, BIOSTEAM_AVAILABLE, IMPORT_ERROR
     if BIOSTEAM_AVAILABLE is not None:
         return BIOSTEAM_AVAILABLE
     try:
@@ -53,9 +62,11 @@ def _ensure_biosteam() -> bool:
             _b.Stream.display_units.flow = "kg/hr"
         except Exception:  # noqa: BLE001
             pass
-        bst, tmo, BIOSTEAM_AVAILABLE = _b, _t, True
+        bst, tmo, BIOSTEAM_AVAILABLE, IMPORT_ERROR = _b, _t, True, None
     except Exception:  # noqa: BLE001
+        import traceback as _tb
         bst, tmo, BIOSTEAM_AVAILABLE = None, None, False
+        IMPORT_ERROR = _tb.format_exc()
     return BIOSTEAM_AVAILABLE
 
 

@@ -14,7 +14,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -336,7 +336,16 @@ def bfd_delete_edge(edge_id: str, state=Depends(get_state)):
 
 @app.get("/api/biosteam/status")
 def biosteam_status():
-    return {"available": ub.biosteam_available()}
+    """Report whether biosteam can actually be imported.
+
+    ``installed`` = the package is on sys.path (cheap ``find_spec``).
+    ``available`` = it imports cleanly (authoritative; may take ~20s the first
+    time due to numba warmup).  When installed but not available, ``error``
+    carries the import traceback so the UI can show *why*.
+    """
+    installed = ub.biosteam_installed()
+    available = ub.biosteam_available()
+    return {"available": available, "installed": installed, "error": ub.IMPORT_ERROR}
 
 
 @app.get("/api/biosteam/defaults")

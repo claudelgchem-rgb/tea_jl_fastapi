@@ -564,6 +564,24 @@ function bfdNodeColor(type){return BFD_COLORS[type]||'#94a3b8';}
 let BFD_DRAG=null;
 let BFD_LINK=null;
 let BFD_LINK_EL=null;
+let BFD_CONNECT=false;      // click-to-connect mode
+let BFD_CONNECT_SRC=null;   // first node clicked in connect mode
+
+async function createEdge(source,target){
+  if(!source||!target||source===target)return;
+  if(STATE.bfdEdges.some(e=>e.source===source&&e.target===target))return;
+  const res=await fetch('/api/bfd/edge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,target})});
+  const d=await res.json();if(d.edge)STATE.bfdEdges.push(d.edge);
+  await fetch('/api/bfd/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nodes:STATE.bfdNodes,edges:STATE.bfdEdges})});
+  initBFD();
+}
+function toggleConnectMode(){
+  BFD_CONNECT=!BFD_CONNECT;BFD_CONNECT_SRC=null;
+  const b=document.getElementById('bfd-connect-btn');
+  if(b){b.style.background=BFD_CONNECT?'#15803d':'#e0e7ff';b.style.color=BFD_CONNECT?'#fff':'#3730a3';b.textContent=BFD_CONNECT?'🔗 연결 모드: ON (노드 두 개 클릭)':'🔗 연결 모드';}
+  const c=document.getElementById('bfd-container');if(c)c.style.cursor=BFD_CONNECT?'crosshair':'default';
+  initBFD();
+}
 let CHAT_W=420, CHAT_H=560;
 let _chatRz=null;
 function startChatResize(ev,dir){
@@ -630,7 +648,9 @@ function initBFD(){
     const sn=STATE.bfdNodes.find(n=>n.id===e.source),tn=STATE.bfdNodes.find(n=>n.id===e.target);
     if(!sn||!tn)return;
     const x1=sn.x+60,y1=sn.y+20,x2=tn.x+60,y2=tn.y+20;
-    edgesHtml+=`<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#bfd-arrow)" style="cursor:pointer" title="클릭으로 삭제" onclick="deleteBFDEdgeById('${e.id}')"/>`;
+    // Wide transparent hit-band (clickable to delete) + the visible arrow.
+    edgesHtml+=`<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="transparent" stroke-width="14" fill="none" style="pointer-events:stroke;cursor:pointer" onclick="deleteBFDEdgeById('${e.id}')"><title>클릭으로 삭제</title></path>`;
+    edgesHtml+=`<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#bfd-arrow)" style="pointer-events:none"/>`;
   });
   svg.innerHTML=edgesHtml;
   STATE.bfdNodes.forEach(node=>{
@@ -638,17 +658,26 @@ function initBFD(){
     const color=bfdNodeColor(node.node_type);
     const nt=STATE.bfdNodeTypes[node.node_type]||{icon:'⚙'};
     const isSep=node.node_type==='발효/정제 분리선';
-    div.className='bfd-node'+(STATE.bfdSelectedNode===node.id?' selected':'');
+    div.className='bfd-node'+(STATE.bfdSelectedNode===node.id?' selected':'')+(BFD_CONNECT_SRC===node.id?' selected':'');
+    div.dataset.nodeId=node.id;
     div.style.cssText=`left:${node.x}px;top:${node.y}px;background:${color}18;border-color:${color};position:absolute;`;
+    if(BFD_CONNECT)div.style.cssText+='outline:2px dashed '+(BFD_CONNECT_SRC===node.id?'#15803d':'#c7d2fe')+';';
     if(isSep){
       div.style.cssText+=`min-width:120px;padding:6px 16px;font-size:13px;font-weight:700;color:${color};`;
       div.innerHTML=`<div style="text-align:center">발효<hr style="margin:5px 0;border-color:${color};border-width:2px"/>정제</div>`;
     }else{
       div.innerHTML=`<div style="font-size:22px;line-height:1.2">${nt.icon}</div><div style="color:${color};font-size:11px;white-space:nowrap;overflow:hidden;max-width:100px;text-overflow:ellipsis">${node.label}</div>`;
     }
-    div.title='드래그: 이동 | Shift+드래그: 연결선 추가';
+    div.title='드래그: 이동 | Shift+드래그: 연결선 추가 | 연결 모드: 클릭으로 연결';
     div.onmousedown=ev=>{
       ev.stopPropagation();
+      // Connect mode: first click = source, second click on another node = edge.
+      if(BFD_CONNECT){
+        if(!BFD_CONNECT_SRC){BFD_CONNECT_SRC=node.id;initBFD();return;}
+        if(BFD_CONNECT_SRC!==node.id){const src=BFD_CONNECT_SRC;BFD_CONNECT_SRC=null;createEdge(src,node.id);}
+        else{BFD_CONNECT_SRC=null;initBFD();}
+        return;
+      }
       STATE.bfdSelectedNode=node.id;
       document.querySelectorAll('#bfd-container .bfd-node').forEach(el=>el.classList.remove('selected'));
       div.classList.add('selected');
@@ -816,16 +845,8 @@ document.addEventListener('mouseup',async ev=>{
   }
   if(BFD_LINK){
     const targetDiv=ev.target.closest('#bfd-container .bfd-node');
-    if(targetDiv){
-      const cont=document.getElementById('bfd-container');
-      const allDivs=Array.from(cont.querySelectorAll('.bfd-node'));
-      const idx=allDivs.indexOf(targetDiv);
-      const tn=STATE.bfdNodes[idx];
-      if(tn&&tn.id!==BFD_LINK.id){
-        const res=await fetch('/api/bfd/edge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:BFD_LINK.id,target:tn.id})});
-        const d=await res.json();if(d.edge){STATE.bfdEdges.push(d.edge);}
-        initBFD();
-      }
+    if(targetDiv&&targetDiv.dataset.nodeId&&targetDiv.dataset.nodeId!==BFD_LINK.id){
+      await createEdge(BFD_LINK.id,targetDiv.dataset.nodeId);
     }
     BFD_LINK=null;if(BFD_LINK_EL){BFD_LINK_EL.remove();BFD_LINK_EL=null;}
   }
@@ -1185,6 +1206,7 @@ function renderBFDTab(){
     h+='</select>';
     h+='<button class="btn-sm text-xs" style="background:var(--green);color:#fff" onclick="addBFDNodeFromSel()">+ 노드 추가</button>';
   }
+  h+='<button id="bfd-connect-btn" class="btn-sm" style="background:'+(BFD_CONNECT?'#15803d':'#e0e7ff')+';color:'+(BFD_CONNECT?'#fff':'#3730a3')+';border:none" onclick="toggleConnectMode()">'+(BFD_CONNECT?'🔗 연결 모드: ON (노드 두 개 클릭)':'🔗 연결 모드')+'</button>';
   h+='<button class="btn-sm btn-danger" style="background:#fee2e2;color:#dc2626" onclick="deleteBFDSelNode()">🗑 노드 삭제</button>';
   h+='<button class="btn-sm" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca" onclick="deleteBFDLastEdge()">↩ 마지막 잇선 삭제</button>';
   h+='<button class="btn-secondary text-xs ml-auto" onclick="clearBFD()" style="padding:4px 10px">↺ 초기화</button>';
@@ -1202,7 +1224,7 @@ function renderBFDTab(){
   h+='<div style="display:flex;gap:16px;align-items:flex-start">';
   h+='<div id="bfd-container" style="flex:1;position:relative;height:520px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;overflow:hidden;cursor:default">';
   h+='<svg id="bfd-svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible"></svg>';
-  h+='<div style="position:absolute;bottom:8px;left:8px;font-size:10px;color:#94a3b8">💡 드래그: 이동 &nbsp;|&nbsp; Shift+드래그: 연결선 추가 &nbsp;|&nbsp; 잇선 클릭: 삭제</div>';
+  h+='<div style="position:absolute;bottom:8px;left:8px;font-size:10px;color:#94a3b8">💡 드래그: 이동 &nbsp;|&nbsp; <b>연결 모드</b> 켜고 노드 두 개 클릭 (또는 Shift+드래그): 연결선 &nbsp;|&nbsp; 잇선 클릭: 삭제</div>';
   h+='</div>';
   h+='<div style="width:340px;flex-shrink:0"><div class="card p-3"><div id="bfd-props-panel" class="text-xs text-gray-400">노드를 선택하세요<br><br><b>Shift+드래그</b>로<br>연결선을 그릴 수 있습니다.</div></div>';
   h+='<div class="flex gap-2 mt-2"><button class="btn-primary text-xs flex-1" onclick="saveBFD()">💾 저장</button><button class="btn-secondary text-xs flex-1" onclick="loadBFD()">🔄 로드</button></div>';
@@ -1326,6 +1348,26 @@ function renderModals(){
 const TABS=['시나리오 입력','분석 결과','차트 분석','발효 공정','벤치마크 DB','화학물질 DB','용액 관리','공정 흐름도','프로젝트 관리','사용 가이드'];
 const TAB_RENDERERS=[renderInputTab,renderResultsTab,renderChartsTab,renderFermTab,renderBenchmarkTab,renderChemTab,renderSolutionTab,renderBFDTab,renderProjectTab,renderGuideTab];
 
+function renderQuickSaveBar(){
+  let opts='<option value="">📂 불러오기…</option>';
+  STATE.projectList.forEach(n=>opts+='<option value="'+esc(n)+'">'+esc(n)+'</option>');
+  return '<div class="flex items-center gap-1" style="background:rgba(255,255,255,0.14);padding:4px 8px;border-radius:8px">'
+    +'<input id="quick-proj-name" placeholder="프로젝트/시나리오 이름" value="'+esc(STATE.project.name||'')+'" style="font-size:11px;padding:4px 8px;border-radius:5px;border:none;width:160px;color:#111">'
+    +'<button onclick="quickSaveProject()" style="font-size:11px;font-weight:700;background:#fff;color:#15803d;border:none;border-radius:5px;padding:4px 10px;cursor:pointer" title="현재 시나리오·화학물질·용액·흐름도를 저장">💾 저장</button>'
+    +'<select id="quick-proj-load" onchange="if(this.value){loadProject(this.value);this.value=\'\';}" style="font-size:11px;padding:4px 6px;border-radius:5px;border:none;color:#111;max-width:150px">'+opts+'</select>'
+    +'<button onclick="loadProjectList()" title="저장 목록 새로고침" style="font-size:12px;background:rgba(255,255,255,0.2);color:#fff;border:none;border-radius:5px;padding:4px 8px;cursor:pointer">🔄</button>'
+    +'</div>';
+}
+async function quickSaveProject(){
+  const name=document.getElementById('quick-proj-name')?.value?.trim()||STATE.project.name||'프로젝트';
+  if(!name){alert('저장할 이름을 입력하세요.');return;}
+  STATE.project.name=name;
+  const body={name,chemicals:STATE.chemList,solutions:STATE.solList,bfd:{nodes:STATE.bfdNodes,edges:STATE.bfdEdges},project:STATE.project,scenarios:STATE.scenarios,utilities:{}};
+  await fetch('/api/project/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  await loadProjectList();
+  alert('저장 완료: "'+name+'"');
+}
+
 function showTabTip(el){
   const tip=el.getAttribute('data-tip');if(!tip)return;
   const t=document.getElementById('g-tooltip');if(!t)return;
@@ -1381,7 +1423,7 @@ function render(){
       +'</div>'
     :'<div style="text-align:right;padding:2px 20px;background:#f0fdf4;border-bottom:1px solid #bbf7d0"><button onclick="STATE.showFlowGuide=true;localStorage.removeItem(\'tea_guide_hidden\');render()" style="background:none;border:none;color:#15803d;cursor:pointer;font-size:11px;font-weight:600">📋 분석 순서 안내 보기</button></div>';
   document.getElementById('app').innerHTML=
-    '<div style="background:linear-gradient(135deg,#006600,#004d00);color:#fff;padding:14px 24px"><div class="flex justify-between items-center"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-sm" style="background:rgba(255,255,255,0.15)">T</div><div><div class="font-extrabold text-base">TEA-Agent Platform</div><div class="text-xs" style="opacity:0.7">R&D 바이오 반도체 소재 기술경제성 분석 시스템</div></div></div><div class="text-right text-xs" style="opacity:0.7"><div class="font-semibold">LG Chem CTO Bio Materials Technology TFT</div><div>v9.0 · Deterministic Engine + LLM Assistant + 고급 공정 분석</div></div></div></div>'+
+    '<div style="background:linear-gradient(135deg,#006600,#004d00);color:#fff;padding:14px 24px"><div class="flex justify-between items-center gap-3 flex-wrap"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-sm" style="background:rgba(255,255,255,0.15)">T</div><div><div class="font-extrabold text-base">TEA-Agent Platform</div><div class="text-xs" style="opacity:0.7">R&D 바이오 반도체 소재 기술경제성 분석 시스템</div></div></div>'+renderQuickSaveBar()+'<div class="text-right text-xs" style="opacity:0.7"><div class="font-semibold">LG Chem CTO Bio Materials Technology TFT</div><div>v9.0 · Deterministic Engine + LLM Assistant + 고급 공정 분석</div></div></div></div>'+
     '<div class="bg-white border-b px-2 flex gap-0 overflow-x-auto">'+tabsHtml+'</div>'+
     flowBanner+
     '<div style="padding:20px 24px;max-width:1400px;margin:0 auto">'+TAB_RENDERERS[STATE.activeTab]()+'</div>'+
@@ -1473,6 +1515,8 @@ function renderChatPanel(){
 // BioSTEAM INTEGRATION
 // ============================================================
 let BIOSTEAM_OK=false;
+let BIOSTEAM_INSTALLED=false;
+let BIOSTEAM_ERR=null;
 let BIOSTEAM_DEFAULTS=null;
 let BIOSTEAM_RESULT=null;
 let BIOSTEAM_RUNNING=false;
@@ -1481,14 +1525,69 @@ async function checkBiosteam(){
   try{
     const r=await fetch('/api/biosteam/status');const d=await r.json();
     BIOSTEAM_OK=d.available===true;
+    BIOSTEAM_INSTALLED=d.installed===true;
+    BIOSTEAM_ERR=d.error||null;
     if(BIOSTEAM_OK){
       const r2=await fetch('/api/biosteam/defaults');BIOSTEAM_DEFAULTS=await r2.json();
     }
+    render();if(STATE.activeTab===7)setTimeout(initBFD,50);
   }catch(e){BIOSTEAM_OK=false;}
 }
 
+function renderConsumptionDetail(c){
+  // Shows HOW MUCH raw/sub material is required (kg per MT of product) and
+  // every utility the process consumes — the detail the Streamlit version had.
+  const raw=c.raw_material_detail||[], sub=c.sub_material_detail||[], util=c.utilities_detail||[];
+  if(!raw.length&&!sub.length&&!util.length)return'';
+  const matTable=(title,rows,color)=>{
+    if(!rows.length)return'';
+    let t='<div class="text-xs font-bold mt-2 mb-1" style="color:'+color+'">'+title+'</div>';
+    t+='<table class="w-full text-xs" style="border-collapse:collapse"><thead><tr style="color:#94a3b8">'
+      +'<th style="text-align:left;font-weight:600">물질</th><th style="text-align:right;font-weight:600">소요량 (kg/MT)</th>'
+      +'<th style="text-align:right;font-weight:600">단가 ($/kg)</th><th style="text-align:right;font-weight:600">원가 ($/MT)</th></tr></thead><tbody>';
+    rows.forEach(r=>{
+      t+='<tr style="border-top:1px solid #eef2f7"><td>'+esc(r.chemical)+'</td>'
+        +'<td class="text-right">'+fmtBio(r.kg_per_mt,3)+'</td>'
+        +'<td class="text-right">'+fmtBio(r.price,3)+'</td>'
+        +'<td class="text-right font-semibold">'+fmtBio(r.cost_per_mt,1)+'</td></tr>';
+    });
+    t+='</tbody></table>';
+    return t;
+  };
+  let h='<details open class="mt-3"><summary class="text-xs cursor-pointer font-bold" style="color:#0369a1">📦 원재료·부재료 소요량 & 유틸리티 상세</summary>';
+  h+='<div class="mt-2 p-2 rounded" style="background:#f8fafc;border:1px solid #e2e8f0">';
+  h+=matTable('원재료 (Carbon Source) — 소요량',raw,'#1d4ed8');
+  h+=matTable('부재료 (Other Feeds) — 소요량',sub,'#92400e');
+  if(util.length){
+    h+='<div class="text-xs font-bold mt-3 mb-1" style="color:#0f766e">유틸리티 (전체)</div>';
+    h+='<table class="w-full text-xs" style="border-collapse:collapse"><thead><tr style="color:#94a3b8">'
+      +'<th style="text-align:left;font-weight:600">유틸리티</th><th style="text-align:left;font-weight:600">구분</th>'
+      +'<th style="text-align:right;font-weight:600">Duty (kJ/hr)</th><th style="text-align:right;font-weight:600">원가 ($/MT)</th></tr></thead><tbody>';
+    util.forEach(u=>{
+      h+='<tr style="border-top:1px solid #eef2f7"><td>'+esc(u.utility)+'</td>'
+        +'<td style="color:#64748b">'+esc(u.category||'')+'</td>'
+        +'<td class="text-right">'+(u.duty_kJ_per_hr==null?'-':fmtBio(u.duty_kJ_per_hr,0))+'</td>'
+        +'<td class="text-right font-semibold">'+fmtBio(u.cost_per_mt,1)+'</td></tr>';
+    });
+    h+='</tbody></table>';
+  }
+  h+='</div></details>';
+  return h;
+}
+
 function renderBiosteamPanel(){
-  if(!BIOSTEAM_OK)return '<div class="card p-4 mt-4" style="border-left:3px solid #d1d5db"><div class="text-xs text-gray-400">⚙ BioSTEAM 공정 시뮬레이션은 <b>미설치</b>. biosteam 패키지를 설치하면 공정 물질수지 기반 원가 자동 계산이 활성화됩니다.</div></div>';
+  if(!BIOSTEAM_OK){
+    if(BIOSTEAM_INSTALLED){
+      // Package is on disk but importing it raised — show the real reason.
+      let h='<div class="card p-4 mt-4" style="border-left:3px solid #dc2626">';
+      h+='<div class="font-bold text-xs mb-1" style="color:#dc2626">⚙ BioSTEAM 설치됨 — 하지만 import 실패</div>';
+      h+='<div class="text-xs text-gray-600 mb-2">패키지는 설치되어 있으나 불러오는 중 오류가 발생했습니다. 아래 원인을 확인하세요.</div>';
+      if(BIOSTEAM_ERR)h+='<details open><summary class="text-xs cursor-pointer" style="color:#6b7280">import 오류 상세</summary><pre style="white-space:pre-wrap;font-size:9px;max-height:220px;overflow:auto;background:#fff;padding:6px;border-radius:4px;margin-top:4px;border:1px solid #fecaca">'+esc(BIOSTEAM_ERR)+'</pre></details>';
+      h+='</div>';
+      return h;
+    }
+    return '<div class="card p-4 mt-4" style="border-left:3px solid #d1d5db"><div class="text-xs text-gray-400">⚙ BioSTEAM 공정 시뮬레이션은 <b>미설치</b>. biosteam 패키지를 설치하면 공정 물질수지 기반 원가 자동 계산이 활성화됩니다.</div></div>';
+  }
   const chems=STATE.chemList||[];
   let h='<div class="card p-4 mt-4" style="border-left:3px solid #15803d">';
   h+='<div class="collapsible-header" onclick="document.getElementById(\'biosim-body\').classList.toggle(\'hidden\');this.querySelector(\'.arrow\').classList.toggle(\'open\')"><span class="arrow">▶</span> <span class="font-bold text-sm" style="color:#15803d">⚙ BioSTEAM 공정 시뮬레이션</span> <span class="badge ml-2" style="background:#dcfce7;color:#15803d">Ready</span></div>';
@@ -1527,6 +1626,8 @@ function renderBiosteamPanel(){
       h+='<tr><td class="py-1">인건비</td><td class="text-right">$'+fmt(c.labor)+'/MT</td></tr>';
       h+='<tr><td class="py-1">수선비</td><td class="text-right">$'+fmt(c.repair)+'/MT</td></tr>';
       h+='</tbody></table>';
+      // --- 원재료/부재료 소요량 (kg/MT) + 전체 유틸리티 ---
+      h+=renderConsumptionDetail(c);
       if(c.mass_balance){
         h+='<details class="mt-2"><summary class="text-xs cursor-pointer" style="color:#1d4ed8">⚖ Mass Balance (단위 스트림 kg/hr)</summary><div class="mt-1 p-2 rounded text-xs" style="background:#eff6ff">';
         if(c.mass_balance.streams){

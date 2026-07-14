@@ -268,6 +268,7 @@ let STATE = {
   chatMessages:[{role:'assistant',content:'안녕하세요. TEA-Agent v9.0 AI 어시스턴트입니다.\n\n질문 예시:\n- "현재 USD/KRW 환율 알려줘"\n- "1,3-PDO 시장 현황 알려줘"\n- "수율 근거 작성해줘"'}],
   chemList:[],chemEditName:null,
   solList:[],
+  utilList:{},subMatList:{},
   bfdNodes:[],bfdEdges:[],bfdNodeTypes:{},bfdSelectedNode:null,
   bioProduct:'',bioSource:'Glucose',bioTargetMT:100,
   projectList:[],
@@ -364,7 +365,7 @@ async function runBiosteamForScenario(scId){
       electricity_price:0.128,
       gmp:document.getElementById('bio-gmp-'+scId)?.checked??true,
       od_to_dcw:0.22,
-      heat_utility:{},
+      heat_utility:combinedHeatUtility(),
     };
     const r=await fetch('/api/biosteam/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const result=await r.json();
@@ -423,7 +424,7 @@ function runAnalysis(){
   if(!STATE.scenarios.length){alert('시나리오를 추가해주세요.');return;}
   STATE.scenarios.forEach(sc=>{if(sc.fermConfig&&sc.fermConfig.enabled)FermEngine.applyToScenario(sc);});
   const results=STATE.scenarios.map(sc=>TEAEngine.analyze(sc,STATE.project));
-  setState({results,activeTab:1,selectedChart:0});
+  setState({results,activeTab:tabIndex('results'),selectedChart:0});
   setTimeout(renderCharts,100);
 }
 
@@ -541,10 +542,38 @@ function addSolution(){
 function removeSolution(id){STATE.solList=STATE.solList.filter(s=>s.id!==id);render();}
 function addSolComponent(id){const s=STATE.solList.find(x=>x.id===id);if(s){s.components.push({name:'',concentration_g_per_l:0});render();}}
 function removeSolComponent(id,idx){const s=STATE.solList.find(x=>x.id===id);if(s){s.components.splice(idx,1);render();}}
-function updateSolComponent(id,idx,field,val){const s=STATE.solList.find(x=>x.id===id);if(s&&s.components[idx])s.components[idx][field]=field==='concentration_g_per_l'?(parseFloat(val)||0):val;}
+function updateSolComponent(id,idx,field,val){
+  const s=STATE.solList.find(x=>x.id===id);if(!s||!s.components[idx])return;
+  if(field==='concentration_g_per_l'){let n=parseFloat(val)||0;if(n<0)n=0;s.components[idx][field]=n;}  // no negatives (#5)
+  else s.components[idx][field]=val;
+}
 async function saveSolutions(){
-  await fetch('/api/solutions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({solutions:STATE.solList})});
-  alert('용액 저장 완료!');
+  const r=await fetch('/api/solutions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({solutions:STATE.solList})});
+  const d=await r.json();
+  if(d.solutions){
+    // Server dropped incomplete rows (#6) and ran fill_water3 (#8); reflect it.
+    STATE.solList=d.solutions.map((s,i)=>({id:s.id||('sol_'+Date.now()+'_'+i),autoclave:s.autoclave!==false,...s}));
+  }
+  render();
+  alert('용액 저장 완료!\n· 물질/농도가 비어있는 행은 삭제되었습니다.\n· 나머지는 물로 채워 1L 기준 조성으로 정규화했습니다.');
+}
+async function importSolutionsFromProject(name){
+  if(!name)return;
+  try{
+    const r=await fetch('/api/project/load/'+encodeURIComponent(name));
+    const d=await r.json();if(d.error){alert(d.error);return;}
+    const sols=(d.data&&d.data.solutions)||[];
+    if(!sols.length){alert('"'+name+'" 프로젝트에 용액이 없습니다.');return;}
+    let added=0;
+    sols.forEach(s=>{
+      const nm=s.user_name||s.name;if(!nm)return;
+      if(STATE.solList.some(x=>x.user_name===nm))return;   // skip duplicates by name
+      STATE.solList.push({id:'sol_'+Date.now()+'_'+STATE.solList.length,user_name:nm,components:(s.components||[]).map(c=>({name:c.name,concentration_g_per_l:c.concentration_g_per_l||0})),autoclave:s.autoclave!==false});
+      added++;
+    });
+    render();
+    alert('"'+name+'"에서 용액 '+added+'개를 불러왔습니다.');
+  }catch(e){alert('불러오기 실패: '+(e.message||e));}
 }
 function calcSolCost(sol){
   let total=0;
@@ -668,7 +697,7 @@ function initBFD(){
     }else{
       div.innerHTML=`<div style="font-size:22px;line-height:1.2">${nt.icon}</div><div style="color:${color};font-size:11px;white-space:nowrap;overflow:hidden;max-width:100px;text-overflow:ellipsis">${node.label}</div>`;
     }
-    div.title='드래그: 이동 | Shift+드래그: 연결선 추가 | 연결 모드: 클릭으로 연결';
+    div.title='본체 드래그: 이동 | 오른쪽 파란 점 드래그: 다른 노드에 연결';
     div.onmousedown=ev=>{
       ev.stopPropagation();
       // Connect mode: first click = source, second click on another node = edge.
@@ -685,6 +714,16 @@ function initBFD(){
       if(ev.shiftKey){BFD_LINK=node;return;}
       BFD_DRAG={node,offsetX:ev.clientX-node.x,offsetY:ev.clientY-node.y};
     };
+    // Connection port: drag from this dot to another node to draw an edge
+    // (true drag-and-drop, no modifier key / connect mode needed).
+    if(!isSep){
+      const port=document.createElement('div');
+      port.className='bfd-port';
+      port.title='이 점을 드래그해서 다른 노드에 연결';
+      port.style.cssText='position:absolute;right:-8px;top:50%;transform:translateY(-50%);width:15px;height:15px;border-radius:50%;background:#3b82f6;border:2px solid #fff;cursor:crosshair;box-shadow:0 1px 3px rgba(0,0,0,0.35);z-index:6';
+      port.onmousedown=ev=>{ev.stopPropagation();ev.preventDefault();BFD_LINK=node;};
+      div.appendChild(port);
+    }
     cont.appendChild(div);
   });
   cont.onmousedown=ev=>{
@@ -702,7 +741,7 @@ let _NETABLES={};     // tableKey -> {columns, tid}
 
 async function renderNodePropsPanel(nodeId){
   const panel=document.getElementById('bfd-props-panel');if(!panel)return;
-  if(!nodeId){panel.innerHTML='<div class="text-xs text-gray-400">노드를 선택하세요<br><br><b>Shift+드래그</b>로 연결선 추가<br>클릭으로 선택·편집</div>';_NODEEDIT=null;return;}
+  if(!nodeId){panel.innerHTML='<div class="text-xs text-gray-400">노드를 선택하세요<br><br>노드 <b>오른쪽 파란 점</b>을 드래그해 다른 노드에 놓으면 연결선이 생깁니다.<br>노드 클릭: 선택·편집</div>';_NODEEDIT=null;return;}
   const node=STATE.bfdNodes.find(n=>n.id===nodeId);if(!node)return;
   panel.innerHTML='<div class="text-xs text-gray-400">불러오는 중…</div>';
   let schema;
@@ -915,20 +954,20 @@ function renderInputTab(){
     h+='<div class="grid grid-cols-2 gap-3 mb-3">'+inputField('sc__'+sc.id+'__name','시나리오 이름',sc.name)+inputField('sc__'+sc.id+'__fermentation','발효 파라미터',sc.fermentation||'')+'</div>';
     h+='<div class="grid grid-cols-4 gap-3 mb-3">'+inputField('sc__'+sc.id+'__capacity','Capacity',sc.capacity,'MT/yr','number')+inputField('sc__'+sc.id+'__capex','CAPEX',sc.capex,'Mn$','number')+inputField('sc__'+sc.id+'__glucosePrice','기질 단가',sc.glucosePrice,'$/MT','number')+inputField('sc__'+sc.id+'__glucoseUnit','기질 원단위',sc.glucoseUnit,'','number')+'</div>';
 
-    h+='<div class="collapsible-header mb-2" onclick="toggleSection(\'ds_'+sc.id+'\')"><span class="arrow '+(dso?'open':'')+'">▶</span><span class="text-xs font-bold" style="color:#7c3aed">🔗 데이터 연동 (화학물질DB · 용액관리 · 발효공정 · BioSTEAM)</span></div>';
+    h+='<div class="collapsible-header mb-2" onclick="toggleSection(\'ds_'+sc.id+'\')"><span class="arrow '+(dso?'open':'')+'">▶</span><span class="text-xs font-bold" style="color:#7c3aed">🔗 데이터 연동 (화학물질DB · 용액관리 · BioSTEAM)</span></div>';
     if(dso){
       h+='<div class="ml-2 mb-3 p-3 rounded-lg" style="background:#faf5ff;border:1px solid #e9d5ff">';
 
       h+='<div class="grid grid-cols-2 gap-3 mb-3">';
       h+='<div class="p-2 rounded" style="background:#fff;border:1px solid #e2e8f0">';
-      h+='<div class="flex justify-between items-center mb-1"><span class="text-xs font-bold" style="color:#92400e">⚗ 화학물질 DB</span><button class="text-xs px-2 py-0.5 rounded" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:pointer" onclick="setState({activeTab:5})">편집 →</button></div>';
+      h+='<div class="flex justify-between items-center mb-1"><span class="text-xs font-bold" style="color:#92400e">⚗ 화학물질 DB</span><button class="text-xs px-2 py-0.5 rounded" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:pointer" onclick="goTab(\'chem\')">편집 →</button></div>';
       const nChem=STATE.chemList.length;
       h+='<div class="text-xs text-gray-500">등록된 화학물질: <b>'+nChem+'종</b></div>';
       if(nChem>0)h+='<div class="text-xs text-gray-400 mt-1">'+STATE.chemList.slice(0,5).map(c=>esc(c.name)+'($'+c.price+')').join(', ')+(nChem>5?' ...':'')+'</div>';
       h+='</div>';
 
       h+='<div class="p-2 rounded" style="background:#fff;border:1px solid #e2e8f0">';
-      h+='<div class="flex justify-between items-center mb-1"><span class="text-xs font-bold" style="color:#92400e">⚗ 용액 관리</span><button class="text-xs px-2 py-0.5 rounded" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:pointer" onclick="setState({activeTab:6})">편집 →</button></div>';
+      h+='<div class="flex justify-between items-center mb-1"><span class="text-xs font-bold" style="color:#92400e">⚗ 용액 관리</span><button class="text-xs px-2 py-0.5 rounded" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:pointer" onclick="goTab(\'sol\')">편집 →</button></div>';
       const nSol=STATE.solList.length;
       h+='<div class="text-xs text-gray-500">등록된 용액: <b>'+nSol+'개</b></div>';
       if(nSol>0){
@@ -940,80 +979,6 @@ function renderInputTab(){
       h+='</div>';
       h+='</div>';
 
-      h+='<div class="p-2 rounded mb-3" style="background:#fff;border:1px solid #e2e8f0">';
-      h+='<div class="flex justify-between items-center mb-2"><span class="text-xs font-bold" style="color:#6d28d9">⚗ 발효 공정 계산 — 용액 사용량 기반 원가 자동 도출</span></div>';
-      const fc=sc.fermConfig;
-      h+='<div class="text-xs font-bold mb-1" style="color:#6d28d9">발효기 사양</div>';
-      h+='<div class="grid grid-cols-6 gap-2 mb-2">';
-      h+=inputField('fc__'+sc.id+'__titer','Titer',fc.titer,'g/L','number');
-      h+=inputField('fc__'+sc.id+'__fermTime','발효 시간',fc.fermTime,'h','number');
-      h+=inputField('fc__'+sc.id+'__vesselM3','발효기 부피',fc.vesselM3,'m3','number');
-      h+=inputField('fc__'+sc.id+'__wvPct','Working Vol',fc.wvPct,'%','number');
-      h+=inputField('fc__'+sc.id+'__vvm','VVM',fc.vvm,'','number');
-      h+=inputField('fc__'+sc.id+'__sipTime','SIP 시간',fc.sipTime,'h','number');
-      h+='</div>';
-      h+='<div class="text-xs font-bold mb-1 mt-2" style="color:#92400e">입력 용액 (1배치당 사용량) <button class="ml-2 px-2 py-0.5 rounded text-white text-xs" style="background:#92400e;border:none;cursor:pointer" onclick="addFermSolution('+sc.id+')">+ 용액 추가</button>';
-      if(STATE.solList.length)h+=' <button class="ml-1 px-2 py-0.5 rounded text-xs" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:pointer" onclick="importSolToFerm('+sc.id+')">⚗ 용액에서 불러오기</button>';
-      h+='</div>';
-      if(!fc.solutions)fc.solutions=[];
-      if(fc.solutions.length){
-        h+='<div class="grid gap-1 mb-2">';
-        fc.solutions.forEach((sol,si)=>{
-          h+='<div class="flex gap-2 items-center text-xs p-1 rounded" style="background:#fefce8">';
-          h+='<input class="input-field" style="width:100px" value="'+esc(sol.name||'')+'" placeholder="용액명" onchange="updateFermSol('+sc.id+','+si+',\'name\',this.value)">';
-          h+='<input class="input-field" style="width:70px" type="number" value="'+(sol.volume_L||0)+'" onchange="updateFermSol('+sc.id+','+si+',\'volume_L\',parseFloat(this.value))"> <span class="text-gray-400">L/배치</span>';
-          h+='<span class="text-gray-300 mx-1">|</span>';
-          (sol.components||[]).forEach((comp,ci)=>{
-            h+='<span class="inline-flex items-center gap-1 px-1 rounded" style="background:#fff;border:1px solid #e5e7eb">';
-            h+='<input class="input-field" style="width:70px;padding:2px 4px" value="'+esc(comp.chemical||'')+'" onchange="updateFermSolComp('+sc.id+','+si+','+ci+',\'chemical\',this.value)">';
-            h+='<input class="input-field" style="width:50px;padding:2px 4px" type="number" value="'+(comp.conc_g_per_L||0)+'" onchange="updateFermSolComp('+sc.id+','+si+','+ci+',\'conc_g_per_L\',parseFloat(this.value))"><span class="text-gray-400">g/L</span>';
-            h+='<input class="input-field" style="width:50px;padding:2px 4px" type="number" value="'+(comp.price_usd_per_kg||0)+'" step="0.01" onchange="updateFermSolComp('+sc.id+','+si+','+ci+',\'price_usd_per_kg\',parseFloat(this.value))"><span class="text-gray-400">$/kg</span>';
-            h+='<button style="color:#dc2626;cursor:pointer;border:none;background:none;font-size:11px" onclick="removeFermSolComp('+sc.id+','+si+','+ci+')">×</button></span>';
-          });
-          h+='<button class="text-xs px-1 rounded" style="background:#e5e7eb;border:none;cursor:pointer" onclick="addFermSolComp('+sc.id+','+si+')">+ 성분</button>';
-          h+='<button class="btn-danger" style="padding:2px 6px;margin-left:auto" onclick="removeFermSol('+sc.id+','+si+')">삭제</button>';
-          h+='</div>';
-        });
-        h+='</div>';
-      }else{
-        h+='<div class="text-xs text-gray-400 mb-2 p-2 rounded" style="background:#fefce8;border:1px dashed #fde68a">용액을 추가하세요. 용액 관리에서 불러올 수도 있습니다.</div>';
-      }
-      h+='<div class="text-xs font-bold mb-1 mt-2" style="color:#a16207">출력 (1배치당 산출물) <button class="ml-2 px-2 py-0.5 rounded text-white text-xs" style="background:#a16207;border:none;cursor:pointer" onclick="addFermOutput('+sc.id+')">+ 산출물 추가</button></div>';
-      if(!fc.outputs)fc.outputs=[];
-      if(fc.outputs.length){
-        h+='<div class="grid gap-1 mb-2">';
-        fc.outputs.forEach((out,oi)=>{
-          h+='<div class="flex gap-2 items-center text-xs">';
-          h+='<input class="input-field" style="width:100px" value="'+esc(out.chemical||'')+'" placeholder="물질명" onchange="updateFermOutput('+sc.id+','+oi+',\'chemical\',this.value)">';
-          h+='<input class="input-field" style="width:80px" type="number" value="'+(out.mass_kg||0)+'" onchange="updateFermOutput('+sc.id+','+oi+',\'mass_kg\',parseFloat(this.value))"> <span class="text-gray-400">kg/배치</span>';
-          h+='<button class="btn-danger" style="padding:2px 6px" onclick="removeFermOutput('+sc.id+','+oi+')">×</button></div>';
-        });
-        h+='</div>';
-      }
-      h+='<div class="flex items-center gap-3 mt-2">';
-      h+='<button class="text-xs px-3 py-1.5 rounded font-bold" style="background:#7c3aed;color:#fff;border:none;cursor:pointer" onclick="runFermAndApply('+sc.id+')">🔮 용액 기반 원가 계산 → 시나리오에 반영</button>';
-      h+='<label class="flex items-center gap-1 text-xs"><input type="checkbox" '+(fc.gmp?'checked':'')+' onchange="STATE.scenarios.find(s=>s.id==='+sc.id+').fermConfig.gmp=this.checked"> GMP (5x CAPEX)</label>';
-      if(sc._fermResult)h+='<span class="text-xs" style="color:#15803d">✓ 적용됨</span>';
-      h+='</div>';
-      if(sc._fermResult){
-        const fr=sc._fermResult;
-        h+='<div class="mt-2 p-2 rounded text-xs" style="background:#ede9fe">';
-        h+='<div class="grid grid-cols-4 gap-1">';
-        h+='<span>발효기: <b>'+fr.nFerm+'기 × '+fr.V_i+'m3</b></span>';
-        h+='<span>배치 시간: <b>'+fr.batchTime+'h</b></span>';
-        h+='<span>배치당 생산: <b>'+fr.prodPerBatch+'kg</b></span>';
-        h+='<span>전력: <b>'+fr.total_kw+'kW</b></span>';
-        h+='</div>';
-        h+='<div class="grid grid-cols-4 gap-1 mt-1 pt-1 border-t" style="border-color:#c4b5fd">';
-        h+='<span>CAPEX: <b>$'+fr.capexMn+'M</b></span>';
-        h+='<span>원재료: <b>$'+sc.rawMaterial+'/MT</b></span>';
-        h+='<span>스팀: <b>$'+fr.steamPerMT+'/MT</b></span>';
-        h+='<span>전기: <b>$'+fr.elecPerMT+'/MT</b></span>';
-        h+='<span>냉각: <b>$'+fr.coolPerMT+'/MT</b></span>';
-        h+='<span>폐수/CIP: <b>$'+fr.wastePerMT+'/MT</b></span>';
-        h+='</div></div>';
-      }
-      h+='</div>';
 
       h+='<div class="p-2 rounded" style="background:#fff;border:1px solid #e2e8f0">';
       h+='<div class="flex justify-between items-center mb-1"><span class="text-xs font-bold" style="color:#1d4ed8">⚗ BioSTEAM 공정 시뮬레이션</span>';
@@ -1061,10 +1026,6 @@ function renderInputTab(){
       h+='</div>';
     }
 
-    h+='<div class="collapsible-header mb-2 mt-2" onclick="toggleSection(\'var_'+sc.id+'\')"><span class="arrow '+(vo?'open':'')+'">▶</span><span class="section-title mb-0">변동비 ($/MT)</span>';
-    if(sc._fermResult||sc._biosteamApplied)h+='<span class="ml-2 text-xs px-2 py-0.5 rounded" style="background:#dcfce7;color:#15803d">연동됨</span>';
-    h+='</div>';
-    if(vo)h+='<div class="grid grid-cols-4 gap-2 mb-3 ml-4">'+inputField('sc__'+sc.id+'__rawMaterial','원재료비',sc.rawMaterial,'$/MT','number')+inputField('sc__'+sc.id+'__subMaterial','부재료',sc.subMaterial,'$/MT','number')+inputField('sc__'+sc.id+'__steam','스팀',sc.steam,'$/MT','number')+inputField('sc__'+sc.id+'__electricity','전기',sc.electricity,'$/MT','number')+'</div><div class="grid grid-cols-4 gap-2 mb-3 ml-4">'+inputField('sc__'+sc.id+'__cooling','냉각',sc.cooling,'$/MT','number')+inputField('sc__'+sc.id+'__waste','폐기물',sc.waste,'$/MT','number')+'</div>';
     h+='<div class="collapsible-header mb-2" onclick="toggleSection(\'fix_'+sc.id+'\')"><span class="arrow '+(fo?'open':'')+'">▶</span><span class="section-title mb-0">고정비</span></div>';
     if(fo)h+='<div class="grid grid-cols-4 gap-2 mb-3 ml-4">'+inputField('sc__'+sc.id+'__headcount','인원수',sc.headcount,'명','number')+inputField('sc__'+sc.id+'__laborCost','인건비 단가',sc.laborCost,'억원/년','number')+inputField('sc__'+sc.id+'__otherFixed','기타 고정비',sc.otherFixed,'$/MT','number')+inputField('sc__'+sc.id+'__sellingPrice','판매가',sc.sellingPrice,'$/MT','number')+'</div>';
     h+='</div></div>';
@@ -1172,7 +1133,11 @@ async function uploadChemCSV(file){
 function renderSolutionTab(){
   const sols=STATE.solList;
   let h='<div class="section-title text-base mb-3">⚗ 용액 관리</div>';
-  h+='<div class="flex gap-2 mb-4"><button class="btn-primary text-sm" onclick="addSolution()">+ 용액 추가</button><button class="btn-secondary text-sm" onclick="saveSolutions()">💾 서버에 저장</button><button class="btn-secondary text-sm" onclick="loadSolutions()">🔄 새로고침</button></div>';
+  h+='<div class="text-xs text-gray-500 mb-2">용액은 <b>현재 프로젝트</b>에 속합니다(프로젝트 저장 시 함께 저장). 다른 프로젝트의 용액을 가져올 수 있습니다.</div>';
+  h+='<div class="flex gap-2 mb-4 flex-wrap items-center"><button class="btn-primary text-sm" onclick="addSolution()">+ 용액 추가</button><button class="btn-secondary text-sm" onclick="saveSolutions()">💾 저장(정규화)</button><button class="btn-secondary text-sm" onclick="loadSolutions()">🔄 새로고침</button>';
+  h+='<span class="text-gray-300 mx-1">|</span><select id="sol-import-proj" class="input-field text-xs" style="width:190px"><option value="">다른 프로젝트에서 불러오기…</option>';
+  STATE.projectList.forEach(n=>h+='<option value="'+esc(n)+'">'+esc(n)+'</option>');
+  h+='</select><button class="btn-secondary text-xs" onclick="importSolutionsFromProject(document.getElementById(\'sol-import-proj\').value)">가져오기</button></div>';
   if(!sols.length)return h+'<div class="card p-10 text-center text-gray-400">용액을 추가해주세요.</div>';
   sols.forEach(sol=>{
     const cost=calcSolCost(sol);
@@ -1184,11 +1149,72 @@ function renderSolutionTab(){
       h+='<select class="input-field" style="width:130px" onchange="updateSolComponent(\''+sol.id+'\','+idx+',\'name\',this.value)"><option value="">선택</option>';
       STATE.chemList.forEach(c=>h+='<option value="'+esc(c.name)+'" '+(comp.name===c.name?'selected':'')+'>'+esc(c.name)+'</option>');
       h+='</select>';
-      h+='<input class="input-field" style="width:90px" type="number" value="'+comp.concentration_g_per_l+'" placeholder="g/L" onchange="updateSolComponent(\''+sol.id+'\','+idx+',\'concentration_g_per_l\',this.value)"> g/L';
+      h+='<input class="input-field" style="width:90px" type="number" min="0" step="any" value="'+comp.concentration_g_per_l+'" placeholder="g/L" onchange="updateSolComponent(\''+sol.id+'\','+idx+',\'concentration_g_per_l\',this.value)"> g/L';
       h+='<button class="btn-danger" style="padding:2px 6px" onclick="removeSolComponent(\''+sol.id+'\','+idx+')">×</button></div>';
     });
     h+='</div></div>';
   });
+  return h;
+}
+
+// ============================================================
+// UTILITIES / SUB-MATERIALS  (heat_utility split into two tables)
+// ============================================================
+async function loadUtilities(){
+  try{
+    const r=await fetch('/api/utilities');const d=await r.json();
+    STATE.utilList=d.utilities||{};STATE.subMatList=d.submaterials||{};
+    render();
+  }catch(e){}
+}
+function updateUtilPrice(kind,key,val){
+  let p=parseFloat(val);if(isNaN(p)||p<0)p=0;   // no negative prices
+  (kind==='util'?STATE.utilList:STATE.subMatList)[key]=p;
+}
+function renameUtil(kind,oldKey,newKey){
+  newKey=(newKey||'').trim();if(!newKey||newKey===oldKey)return;
+  const tbl=kind==='util'?STATE.utilList:STATE.subMatList;
+  tbl[newKey]=tbl[oldKey];delete tbl[oldKey];render();
+}
+function addUtilRow(kind){
+  const tbl=kind==='util'?STATE.utilList:STATE.subMatList;
+  let i=1,name;do{name=(kind==='util'?'new_utility_':'new_submaterial_')+i;i++;}while(name in tbl);
+  tbl[name]=0;render();
+}
+function removeUtilRow(kind,key){
+  delete (kind==='util'?STATE.utilList:STATE.subMatList)[key];render();
+}
+async function saveUtilities(){
+  const r=await fetch('/api/utilities',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utilities:STATE.utilList,submaterials:STATE.subMatList})});
+  const d=await r.json();
+  STATE.utilList=d.utilities||STATE.utilList;STATE.subMatList=d.submaterials||STATE.subMatList;
+  alert('유틸리티/부재료 단가 저장 완료!');render();
+}
+function combinedHeatUtility(){
+  // Recombine both tables into the single heat_utility dict BioSTEAM consumes.
+  return Object.assign({}, STATE.utilList, STATE.subMatList);
+}
+function _utilTable(kind,title,desc,color,tbl){
+  const keys=Object.keys(tbl);
+  let h='<div class="card p-4 mb-4"><div class="flex justify-between items-center mb-1"><div class="font-bold text-sm" style="color:'+color+'">'+title+'</div>';
+  h+='<button class="btn-sm text-xs" style="background:'+color+';color:#fff;border:none" onclick="addUtilRow(\''+kind+'\')">+ 항목 추가</button></div>';
+  h+='<div class="text-xs text-gray-400 mb-2">'+desc+'</div>';
+  h+='<div class="overflow-x-auto"><table class="tea-table"><thead><tr><th style="text-align:left">항목(ID)</th><th>단가</th><th>관리</th></tr></thead><tbody>';
+  if(!keys.length)h+='<tr><td colspan="3" class="text-center text-gray-400 py-3">항목이 없습니다. "+ 항목 추가"로 등록하세요.</td></tr>';
+  keys.forEach(k=>{
+    h+='<tr><td><input class="input-field" style="width:220px" value="'+esc(k)+'" onchange="renameUtil(\''+kind+'\',\''+esc(k)+'\',this.value)"></td>';
+    h+='<td><input type="number" min="0" step="any" value="'+tbl[k]+'" class="input-field text-right" style="width:130px" onchange="updateUtilPrice(\''+kind+'\',\''+esc(k)+'\',this.value)"></td>';
+    h+='<td><button class="btn-danger" onclick="removeUtilRow(\''+kind+'\',\''+esc(k)+'\')">삭제</button></td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+  return h;
+}
+function renderUtilTab(){
+  let h='<div class="section-title text-base mb-2">⚡ 유틸리티 / 부재료 단가 관리</div>';
+  h+='<div class="text-xs text-gray-500 mb-3">진짜 유틸리티(스팀·냉각수·연료 등)와 부재료(resin·filter·membrane·CIP 약품 등)를 분리해 관리합니다. HIC/IEX column의 resin 종류·가격이 여기서 정의됩니다. <b>BioSTEAM 실행 시 두 표는 하나의 heat_utility로 합쳐져 전달됩니다.</b></div>';
+  h+='<div class="flex gap-2 mb-4"><button class="btn-primary text-sm" onclick="saveUtilities()">💾 서버에 저장</button><button class="btn-secondary text-sm" onclick="loadUtilities()">🔄 새로고침</button></div>';
+  h+=_utilTable('util','⚡ 유틸리티 (steam, cooling water, fuel, waste)','단위 소비량당 단가($/kg 또는 $/kmol 등, 초기값 기준)','#0f766e',STATE.utilList);
+  h+=_utilTable('sub','🧫 부재료 (resin, filter, membrane, CIP)','HIC/IEX resin, diafiltration membrane, HEPA/air filter, CIP 약품 등. 소비 단위당 단가.','#92400e',STATE.subMatList);
   return h;
 }
 
@@ -1206,7 +1232,6 @@ function renderBFDTab(){
     h+='</select>';
     h+='<button class="btn-sm text-xs" style="background:var(--green);color:#fff" onclick="addBFDNodeFromSel()">+ 노드 추가</button>';
   }
-  h+='<button id="bfd-connect-btn" class="btn-sm" style="background:'+(BFD_CONNECT?'#15803d':'#e0e7ff')+';color:'+(BFD_CONNECT?'#fff':'#3730a3')+';border:none" onclick="toggleConnectMode()">'+(BFD_CONNECT?'🔗 연결 모드: ON (노드 두 개 클릭)':'🔗 연결 모드')+'</button>';
   h+='<button class="btn-sm btn-danger" style="background:#fee2e2;color:#dc2626" onclick="deleteBFDSelNode()">🗑 노드 삭제</button>';
   h+='<button class="btn-sm" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca" onclick="deleteBFDLastEdge()">↩ 마지막 잇선 삭제</button>';
   h+='<button class="btn-secondary text-xs ml-auto" onclick="clearBFD()" style="padding:4px 10px">↺ 초기화</button>';
@@ -1224,9 +1249,9 @@ function renderBFDTab(){
   h+='<div style="display:flex;gap:16px;align-items:flex-start">';
   h+='<div id="bfd-container" style="flex:1;position:relative;height:520px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;overflow:hidden;cursor:default">';
   h+='<svg id="bfd-svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible"></svg>';
-  h+='<div style="position:absolute;bottom:8px;left:8px;font-size:10px;color:#94a3b8">💡 드래그: 이동 &nbsp;|&nbsp; <b>연결 모드</b> 켜고 노드 두 개 클릭 (또는 Shift+드래그): 연결선 &nbsp;|&nbsp; 잇선 클릭: 삭제</div>';
+  h+='<div style="position:absolute;bottom:8px;left:8px;font-size:10px;color:#94a3b8">💡 노드 본체 드래그: 이동 &nbsp;|&nbsp; <b>오른쪽 파란 점(포트)을 드래그</b>해서 다른 노드에 놓으면 연결 &nbsp;|&nbsp; 잇선 클릭: 삭제</div>';
   h+='</div>';
-  h+='<div style="width:340px;flex-shrink:0"><div class="card p-3"><div id="bfd-props-panel" class="text-xs text-gray-400">노드를 선택하세요<br><br><b>Shift+드래그</b>로<br>연결선을 그릴 수 있습니다.</div></div>';
+  h+='<div style="width:340px;flex-shrink:0"><div class="card p-3"><div id="bfd-props-panel" class="text-xs text-gray-400">노드를 선택하세요<br><br>노드 <b>오른쪽 파란 점</b>을<br>드래그해 연결선을 그립니다.</div></div>';
   h+='<div class="flex gap-2 mt-2"><button class="btn-primary text-xs flex-1" onclick="saveBFD()">💾 저장</button><button class="btn-secondary text-xs flex-1" onclick="loadBFD()">🔄 로드</button></div>';
   h+='</div>';
   h+='</div>';
@@ -1275,31 +1300,31 @@ function renderGuideTab(){
     <div class="section-title text-base mb-4">🗺 전체 분석 워크플로우</div>
     <div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;justify-content:center">
       <div style="text-align:center;padding:8px 0">
-        <div style="font-size:10px;font-weight:700;color:#9ca3af;margin-bottom:4px">데이터 준비 (선택)</div>
+        <div style="font-size:10px;font-weight:800;color:#b91c1c;margin-bottom:4px">데이터 준비 (필수)</div>
         <div style="display:flex;flex-direction:column;gap:6px">
-          <div onclick="setState({activeTab:5})" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 화학물질 DB</div>
+          <div onclick="goTab('chem')" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 화학물질 DB</div>
           <div style="color:#d1d5db;text-align:center;font-size:11px">↓</div>
-          <div onclick="setState({activeTab:6})" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 용액 관리</div>
+          <div onclick="goTab('sol')" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 용액 관리</div>
           <div style="color:#d1d5db;text-align:center;font-size:11px">↓</div>
-          <div onclick="setState({activeTab:3})" style="background:#ede9fe;border:1px solid #c4b5fd;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#6d28d9;cursor:pointer;text-align:center">⚗ 발효 공정 계산</div>
+          <div onclick="goTab('util')" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 유틸리티/부재료</div>
         </div>
       </div>
       <div style="font-size:22px;color:#d1d5db;padding:0 12px;margin-top:20px">→</div>
       <div style="text-align:center;padding:8px 0">
         <div style="font-size:10px;font-weight:700;color:#15803d;margin-bottom:4px">핵심 단계</div>
-        <div onclick="setState({activeTab:0})" style="background:#dcfce7;border:2px solid #15803d;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;color:#15803d;cursor:pointer;text-align:center;box-shadow:0 2px 8px rgba(21,128,61,0.2)">① 시나리오 입력<div style="font-size:10px;font-weight:400;margin-top:3px;color:#4ade80">CAPEX·OPEX·생산량·판매가</div></div>
+        <div onclick="goTab('input')" style="background:#dcfce7;border:2px solid #15803d;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;color:#15803d;cursor:pointer;text-align:center;box-shadow:0 2px 8px rgba(21,128,61,0.2)">① 시나리오 입력<div style="font-size:10px;font-weight:400;margin-top:3px;color:#4ade80">CAPEX·생산량·판매가</div></div>
         <div style="color:#d1d5db;text-align:center;font-size:18px;margin:6px 0">↓</div>
-        <div onclick="setState({activeTab:1})" style="background:#dcfce7;border:2px solid #15803d;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;color:#15803d;cursor:pointer;text-align:center;box-shadow:0 2px 8px rgba(21,128,61,0.2)">② 분석 결과<div style="font-size:10px;font-weight:400;margin-top:3px;color:#4ade80">NPV·IRR·회수기간·BC비율</div></div>
+        <div onclick="goTab('bfd')" style="background:#dbeafe;border:2px solid #1d4ed8;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;color:#1d4ed8;cursor:pointer;text-align:center;box-shadow:0 2px 8px rgba(29,78,216,0.2)">② 공정 흐름도<div style="font-size:10px;font-weight:400;margin-top:3px;color:#60a5fa">BFD → BioSTEAM</div></div>
         <div style="color:#d1d5db;text-align:center;font-size:18px;margin:6px 0">↓</div>
-        <div onclick="setState({activeTab:2})" style="background:#dcfce7;border:2px solid #15803d;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;color:#15803d;cursor:pointer;text-align:center;box-shadow:0 2px 8px rgba(21,128,61,0.2)">③ 차트 분석<div style="font-size:10px;font-weight:400;margin-top:3px;color:#4ade80">현금흐름·누적NPV·민감도</div></div>
+        <div onclick="goTab('results')" style="background:#dcfce7;border:2px solid #15803d;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;color:#15803d;cursor:pointer;text-align:center;box-shadow:0 2px 8px rgba(21,128,61,0.2)">③ 분석 결과<div style="font-size:10px;font-weight:400;margin-top:3px;color:#4ade80">NPV·IRR·회수기간·BC비율</div></div>
       </div>
       <div style="font-size:22px;color:#d1d5db;padding:0 12px;margin-top:20px">→</div>
       <div style="text-align:center;padding:8px 0">
         <div style="font-size:10px;font-weight:700;color:#9ca3af;margin-bottom:4px">보완 도구 (선택)</div>
         <div style="display:flex;flex-direction:column;gap:6px">
-          <div onclick="setState({activeTab:7})" style="background:#dbeafe;border:1px solid #93c5fd;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#1d4ed8;cursor:pointer;text-align:center">⚗ 공정 흐름도</div>
-          <div onclick="setState({activeTab:4})" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 벤치마크 DB</div>
-          <div onclick="setState({activeTab:8})" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#475569;cursor:pointer;text-align:center">⚗ 프로젝트 저장</div>
+          <div onclick="goTab('charts')" style="background:#dbeafe;border:1px solid #93c5fd;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#1d4ed8;cursor:pointer;text-align:center">⚗ 차트 분석</div>
+          <div onclick="goTab('bench')" style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#92400e;cursor:pointer;text-align:center">⚗ 벤치마크 DB</div>
+          <div onclick="goTab('project')" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:8px;padding:6px 14px;font-size:11px;font-weight:700;color:#475569;cursor:pointer;text-align:center">⚗ 프로젝트 저장</div>
         </div>
       </div>
     </div>
@@ -1345,8 +1370,28 @@ function renderModals(){
 // ============================================================
 // MAIN RENDER
 // ============================================================
-const TABS=['시나리오 입력','분석 결과','차트 분석','발효 공정','벤치마크 DB','화학물질 DB','용액 관리','공정 흐름도','프로젝트 관리','사용 가이드'];
-const TAB_RENDERERS=[renderInputTab,renderResultsTab,renderChartsTab,renderFermTab,renderBenchmarkTab,renderChemTab,renderSolutionTab,renderBFDTab,renderProjectTab,renderGuideTab];
+// Key-based tab definitions so ordering is data-driven (no hardcoded indices).
+// Order = workflow: 시나리오 입력 → 데이터 준비(필수) → 흐름도/발효 → 결과 → 관리.
+const TAB_DEFS=[
+  {key:'input',  label:'시나리오 입력',    num:'01', cls:'c-core', render:renderInputTab,     tip:'[핵심 1단계] 제품명·CAPEX·생산량·판매가를 입력'},
+  {key:'chem',   label:'화학물질 DB',      num:'02', cls:'c-db',   render:renderChemTab,      tip:'[필수 데이터 준비] 원료·제품 화학물질 단가 DB 관리'},
+  {key:'sol',    label:'용액 관리',        num:'03', cls:'c-db',   render:renderSolutionTab,  tip:'[필수 데이터 준비] 프로젝트별 배지·용액 조성 관리'},
+  {key:'util',   label:'유틸리티/부재료',  num:'04', cls:'c-db',   render:renderUtilTab,      tip:'[필수 데이터 준비] 유틸리티(스팀·냉각수)·부재료(resin·filter) 단가'},
+  {key:'bfd',    label:'공정 흐름도',      num:'05', cls:'c-vis',  render:renderBFDTab,       tip:'[공정] BFD 작성 → 노드 추가 후 드래그로 연결'},
+  {key:'ferm',   label:'발효 공정',        num:'06', cls:'c-prep', render:renderFermTab,      tip:'[공정] Scale-up·발효 공정 도구'},
+  {key:'results',label:'분석 결과',        num:'07', cls:'c-core', render:renderResultsTab,   tip:'[결과] NPV·IRR·회수기간·BC비율'},
+  {key:'charts', label:'차트 분석',        num:'08', cls:'c-core', render:renderChartsTab,    tip:'[결과] 현금흐름·누적NPV·민감도 차트'},
+  {key:'bench',  label:'벤치마크 DB',      num:'B',  cls:'c-db',   render:renderBenchmarkTab, tip:'[보조] 경쟁 기술 벤치마크 등록·비교'},
+  {key:'project',label:'프로젝트 관리',    num:'M',  cls:'c-mgmt', render:renderProjectTab,   tip:'[관리] 프로젝트 저장·불러오기·비교'},
+  {key:'guide',  label:'사용 가이드',      num:'G',  cls:'c-mgmt', render:renderGuideTab,     tip:'[안내] 사용 방법·분석 방법론·판단 기준'},
+];
+function tabIndex(key){return TAB_DEFS.findIndex(t=>t.key===key);}
+function goTab(key){
+  const i=tabIndex(key);if(i<0)return;
+  setState({activeTab:i});
+  if(key==='charts')setTimeout(renderCharts,100);
+  if(key==='bfd')setTimeout(initBFD,100);
+}
 
 function renderQuickSaveBar(){
   let opts='<option value="">📂 불러오기…</option>';
@@ -1380,43 +1425,33 @@ function hideTabTip(){const t=document.getElementById('g-tooltip');if(t)t.style.
 
 function render(){
   const R=STATE.results;
-  const TAB_META=[
-    {num:'01',cls:'c-core',tip:'[핵심 1단계] 제품명·CAPEX·OPEX·생산량을 입력하고 분석 실행 클릭'},
-    {num:'02',cls:'c-core',tip:'[핵심 2단계] NPV·IRR·회수기간·BC비율 자동 계산 결과 확인'},
-    {num:'03',cls:'c-core',tip:'[핵심 3단계] 현금흐름·누적NPV·민감도 차트 시각화'},
-    {num:'A',cls:'c-prep',tip:'[보조 A] 발효 파라미터(기질·배치시간·유틸리티) 계산 후 OPEX에 반영'},
-    {num:'B',cls:'c-db',tip:'[보조 B] 경쟁 기술 벤치마크 데이터 등록·비교 분석'},
-    {num:'C',cls:'c-db',tip:'[보조 C] 원료·제품 화학물질 단가 DB 관리 → 용액 원가 계산에 사용'},
-    {num:'D',cls:'c-db',tip:'[보조 D] 배지·용액 조성·원가 계산 (화학물질 DB 사용) → OPEX에 반영'},
-    {num:'E',cls:'c-vis',tip:'[시각화] 공정 블록 다이어그램(BFD) 작성 → 노드 추가 후 Shift+드래그로 연결'},
-    {num:'F',cls:'c-mgmt',tip:'[관리] 현재 분석 결과 저장·불러오기·프로젝트 비교'},
-    {num:'G',cls:'c-mgmt',tip:'[안내] 플랫폼 사용 방법·분석 방법론·경제성 판단 기준 안내'},
-  ];
   const scMap={'c-core':'#15803d','c-prep':'#6d28d9','c-db':'#92400e','c-vis':'#1d4ed8','c-mgmt':'#475569'};
-  const tabsHtml=TABS.map((t,i)=>{
-    const m=TAB_META[i];const active=STATE.activeTab===i;const nc=scMap[m.cls];
-    return '<button class="px-3 py-2 text-xs whitespace-nowrap '+(active?'tab-active':'tab-inactive')+'" style="display:flex;flex-direction:column;align-items:center;gap:1px;min-width:72px" onclick="setState({activeTab:'+i+'});'+(i===2?'setTimeout(renderCharts,100)':'')+(i===7?'setTimeout(initBFD,100)':'')+'" data-tip="'+m.tip.replace(/"/g,'&quot;')+'" onmouseenter="showTabTip(this)" onmouseleave="hideTabTip()">'
+  const resultsIdx=tabIndex('results');
+  const tabsHtml=TAB_DEFS.map((m,i)=>{
+    const active=STATE.activeTab===i;const nc=scMap[m.cls];
+    return '<button class="px-3 py-2 text-xs whitespace-nowrap '+(active?'tab-active':'tab-inactive')+'" style="display:flex;flex-direction:column;align-items:center;gap:1px;min-width:72px" onclick="goTab(\''+m.key+'\')" data-tip="'+m.tip.replace(/"/g,'&quot;')+'" onmouseenter="showTabTip(this)" onmouseleave="hideTabTip()">'
       +'<span class="tab-num" style="color:'+nc+'">'+m.num+'</span>'
-      +'<span>'+t+(i===1&&R.length?'<span class="ml-1 text-white rounded-full px-1" style="background:var(--green);font-size:9px">'+R.length+'</span>':'')+'</span>'
+      +'<span>'+m.label+(i===resultsIdx&&R.length?'<span class="ml-1 text-white rounded-full px-1" style="background:var(--green);font-size:9px">'+R.length+'</span>':'')+'</span>'
       +'</button>';
   }).join('');
   const showGuide=STATE.showFlowGuide;
   const flowBanner=showGuide
     ?'<div class="flow-banner">'
       +'<span style="font-size:11px;font-weight:800;color:#166534;white-space:nowrap;margin-right:2px">📋 분석 순서:</span>'
-      +'<span class="flow-chip c-core" onclick="setState({activeTab:0})">① 시나리오 입력</span>'
+      +'<span class="flow-chip c-core" onclick="goTab(\'input\')">① 시나리오 입력</span>'
       +'<span style="color:#9ca3af">→</span>'
-      +'<span class="flow-chip c-core" onclick="setState({activeTab:1})">② 분석 결과</span>'
+      +'<span style="font-size:11px;font-weight:800;color:#b91c1c;white-space:nowrap;margin:0 2px">데이터 준비 (필수):</span>'
+      +'<span class="flow-chip c-db" onclick="goTab(\'chem\')">② 화학물질 DB</span>'
       +'<span style="color:#9ca3af">→</span>'
-      +'<span class="flow-chip c-core" onclick="setState({activeTab:2})">③ 차트 분석</span>'
+      +'<span class="flow-chip c-db" onclick="goTab(\'sol\')">③ 용액 관리</span>'
+      +'<span style="color:#9ca3af">→</span>'
+      +'<span class="flow-chip c-db" onclick="goTab(\'util\')">④ 유틸/부재료</span>'
       +'<span style="color:#d1d5db;margin:0 6px;font-size:16px">|</span>'
-      +'<span style="font-size:11px;font-weight:700;color:#6d28d9;white-space:nowrap;margin-right:2px">데이터 준비 (선택):</span>'
-      +'<span class="flow-chip c-db" onclick="setState({activeTab:5})">⚗ 화학물질 DB</span>'
+      +'<span class="flow-chip c-vis" onclick="goTab(\'bfd\')">⑤ 공정 흐름도</span>'
       +'<span style="color:#9ca3af">→</span>'
-      +'<span class="flow-chip c-db" onclick="setState({activeTab:6})">⚗ 용액 관리</span>'
+      +'<span class="flow-chip c-core" onclick="goTab(\'results\')">⑥ 분석 결과</span>'
       +'<span style="color:#9ca3af">→</span>'
-      +'<span class="flow-chip c-prep" onclick="setState({activeTab:3})">⚗ 발효 공정</span>'
-      +'<span class="flow-chip c-vis" onclick="setState({activeTab:7})" style="margin-left:4px">⚗ 공정 흐름도</span>'
+      +'<span class="flow-chip c-core" onclick="goTab(\'charts\')">⑦ 차트 분석</span>'
       +'<div style="flex:1"></div>'
       +'<span style="font-size:10px;color:#9ca3af;margin-right:8px;white-space:nowrap">탭 위에 마우스를 올리면 설명이 표시됩니다</span>'
       +'<button onclick="localStorage.setItem(\'tea_guide_hidden\',\'1\');STATE.showFlowGuide=false;render()" style="background:none;border:1px solid #d1fae5;border-radius:6px;color:#9ca3af;cursor:pointer;font-size:13px;padding:2px 8px;line-height:1" title="안내 닫기">×</button>'
@@ -1426,10 +1461,10 @@ function render(){
     '<div style="background:linear-gradient(135deg,#006600,#004d00);color:#fff;padding:14px 24px"><div class="flex justify-between items-center gap-3 flex-wrap"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-sm" style="background:rgba(255,255,255,0.15)">T</div><div><div class="font-extrabold text-base">TEA-Agent Platform</div><div class="text-xs" style="opacity:0.7">R&D 바이오 반도체 소재 기술경제성 분석 시스템</div></div></div>'+renderQuickSaveBar()+'<div class="text-right text-xs" style="opacity:0.7"><div class="font-semibold">LG Chem CTO Bio Materials Technology TFT</div><div>v9.0 · Deterministic Engine + LLM Assistant + 고급 공정 분석</div></div></div></div>'+
     '<div class="bg-white border-b px-2 flex gap-0 overflow-x-auto">'+tabsHtml+'</div>'+
     flowBanner+
-    '<div style="padding:20px 24px;max-width:1400px;margin:0 auto">'+TAB_RENDERERS[STATE.activeTab]()+'</div>'+
+    '<div style="padding:20px 24px;max-width:1400px;margin:0 auto">'+(TAB_DEFS[STATE.activeTab]||TAB_DEFS[0]).render()+'</div>'+
     '<div class="text-center py-4 text-xs text-gray-400 border-t">TEA-Agent Platform v9.0 · LG Chem CTO · Deterministic Engine + Chem DB + Solution Mgmt + BFD + LLM</div>'+
     renderModals();
-  if(STATE.activeTab===7)setTimeout(initBFD,50);
+  if((TAB_DEFS[STATE.activeTab]||{}).key==='bfd')setTimeout(initBFD,50);
 }
 
 // ============================================================
@@ -1530,7 +1565,7 @@ async function checkBiosteam(){
     if(BIOSTEAM_OK){
       const r2=await fetch('/api/biosteam/defaults');BIOSTEAM_DEFAULTS=await r2.json();
     }
-    render();if(STATE.activeTab===7)setTimeout(initBFD,50);
+    render();if((TAB_DEFS[STATE.activeTab]||{}).key==='bfd')setTimeout(initBFD,50);
   }catch(e){BIOSTEAM_OK=false;}
 }
 
@@ -1698,7 +1733,7 @@ async function runBiosteamSim(){
       electricity_price:parseFloat(document.getElementById('bio-elecprice')?.value)||0.128,
       gmp:document.getElementById('bio-gmp')?.checked??true,
       od_to_dcw:parseFloat(document.getElementById('bio-od')?.value)||0.22,
-      heat_utility:{},
+      heat_utility:combinedHeatUtility(),
     };
     const r=await fetch('/api/biosteam/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     BIOSTEAM_RESULT=await r.json();
@@ -1731,6 +1766,8 @@ function applyBiosteamToScenario(){
 render();
 renderChatPanel();
 loadChemicals();
+loadSolutions();
+loadUtilities();
 loadProjectList();
 checkBiosteam();
 loadBFD();

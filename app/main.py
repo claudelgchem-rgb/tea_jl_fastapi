@@ -176,6 +176,44 @@ class SolutionsIn(BaseModel):
     solutions: List[Dict[str, Any]]
 
 
+def _clean_solution(state, sol: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate + normalise one solution before storing:
+
+    * drop rows missing a chemical name OR a positive concentration (#6)
+    * clamp negative concentrations to 0 (they are then dropped) (#5)
+    * run ``fill_water3`` so the composition is expressed for 1 L, with the
+      remainder filled as water (#8)
+    """
+    from .flow_tabs.aux_compat import fill_water3
+
+    comps = []
+    for c in sol.get("components", []) or []:
+        name = (c.get("name") or "").strip()
+        try:
+            conc = float(c.get("concentration_g_per_l", 0) or 0)
+        except (TypeError, ValueError):
+            conc = 0.0
+        if conc < 0:
+            conc = 0.0
+        if not name or conc <= 0 or name == "Water":
+            continue  # missing name/conc, or the water row we will recompute
+        comps.append({"name": name, "concentration_g_per_l": conc})
+
+    # Fill water so the 1 L composition balances.
+    mass = {c["name"]: c["concentration_g_per_l"] for c in comps}
+    try:
+        filled = fill_water3(dict(mass), 1)
+        water = float(filled.get("Water", 0) or 0)
+    except Exception:  # noqa: BLE001
+        water = max(0.0, 1000.0 - sum(mass.values()))
+    if water > 0:
+        comps.append({"name": "Water", "concentration_g_per_l": round(water, 4)})
+
+    out = dict(sol)
+    out["components"] = comps
+    return out
+
+
 @app.get("/api/solutions")
 def solutions_get(state=Depends(get_state)):
     return {"solutions": state.ui_solutions}
@@ -183,8 +221,64 @@ def solutions_get(state=Depends(get_state)):
 
 @app.post("/api/solutions")
 def solutions_save(body: SolutionsIn, state=Depends(get_state)):
-    state.ui_solutions = body.solutions
-    return {"ok": True}
+    # Keep solutions that still have at least one real component after cleaning.
+    cleaned = []
+    for sol in body.solutions:
+        c = _clean_solution(state, sol)
+        if any(x["name"] != "Water" for x in c["components"]):
+            cleaned.append(c)
+    state.ui_solutions = cleaned
+    return {"ok": True, "solutions": cleaned}
+
+
+# ---------------------------------------------------------------------------
+# Utilities / sub-materials (heat_utility split into two editable tables)
+# ---------------------------------------------------------------------------
+
+# A heat-utility agent is a *sub-material* (resin/filter/membrane/CIP chemical)
+# rather than a true utility (steam/water/fuel/waste) when its id matches these.
+_SUBMATERIAL_KEYWORDS = ("resin", "filter", "membrane", "cip")
+
+
+def _is_submaterial(uid: str) -> bool:
+    u = (uid or "").lower()
+    return any(k in u for k in _SUBMATERIAL_KEYWORDS)
+
+
+def _split_utilities(hu: Dict[str, float]):
+    utilities, submaterials = {}, {}
+    for k, v in (hu or {}).items():
+        (submaterials if _is_submaterial(k) else utilities)[k] = v
+    return utilities, submaterials
+
+
+class UtilitiesIn(BaseModel):
+    utilities: Dict[str, float] = {}
+    submaterials: Dict[str, float] = {}
+
+
+@app.get("/api/utilities")
+def utilities_get(state=Depends(get_state)):
+    utilities, submaterials = _split_utilities(state.heat_utility)
+    return {"utilities": utilities, "submaterials": submaterials}
+
+
+@app.post("/api/utilities")
+def utilities_save(body: UtilitiesIn, state=Depends(get_state)):
+    # Recombine into the single heat_utility dict biosteam consumes.
+    merged: Dict[str, float] = {}
+    for src in (body.utilities, body.submaterials):
+        for k, v in src.items():
+            k = (k or "").strip()
+            if not k:
+                continue
+            try:
+                merged[k] = float(v)
+            except (TypeError, ValueError):
+                merged[k] = 0.0
+    state.heat_utility = merged
+    utilities, submaterials = _split_utilities(merged)
+    return {"ok": True, "utilities": utilities, "submaterials": submaterials}
 
 
 # ---------------------------------------------------------------------------

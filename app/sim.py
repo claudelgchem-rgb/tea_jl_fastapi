@@ -365,6 +365,21 @@ def _breakdown(state, scaled, target_amount) -> Dict[str, Any]:
     })
     util_rows.sort(key=lambda r: r["cost_per_mt"], reverse=True)
 
+    # Titer (g/L) back-calculated from the BioSTEAM fermenter mass balance:
+    # product mass produced per batch / final broth volume.
+    titer = 0.0
+    prod = state.main_product
+    best = 0.0
+    for n in state.flow_state.nodes:
+        if n.data.get("node_type") != "발효기":
+            continue
+        val = n.data.get("Value", {}) or {}
+        out = (val.get("out_mass") or {})
+        fv = float(val.get("final_vol", 0) or 0)
+        pm = float(out.get(prod, 0) or 0)
+        if fv > 0 and pm > best:
+            best = pm
+            titer = pm * 1000.0 / fv  # kg -> g, per L
     capex = scaled.installed_cost * lang_factor * 1.15
     if state.get("gmp", True):
         capex *= 5
@@ -387,6 +402,8 @@ def _breakdown(state, scaled, target_amount) -> Dict[str, Any]:
         "raw_material_detail": raw_rows,
         "sub_material_detail": sub_rows,
         "utilities_detail": util_rows,
+        "titer_g_per_L": round(titer, 3),
+        "target_MT_per_yr": round(target_amount / 1000.0, 4),
         "logic": {
             "batch_time_h": round(ub.get_batch_time({n.id: n.data for n in state.flow_state.nodes}), 2),
             "target_kg_per_yr": target_amount,

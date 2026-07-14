@@ -593,6 +593,8 @@ function bfdNodeColor(type){return BFD_COLORS[type]||'#94a3b8';}
 let BFD_DRAG=null;
 let BFD_LINK=null;
 let BFD_LINK_EL=null;
+// Terminal sinks: nothing flows out, so they have no outgoing connection port.
+const BFD_SINK_TYPES=['Product Stream','폐기물'];
 let BFD_CONNECT=false;      // click-to-connect mode
 let BFD_CONNECT_SRC=null;   // first node clicked in connect mode
 
@@ -676,7 +678,8 @@ function initBFD(){
   STATE.bfdEdges.forEach(e=>{
     const sn=STATE.bfdNodes.find(n=>n.id===e.source),tn=STATE.bfdNodes.find(n=>n.id===e.target);
     if(!sn||!tn)return;
-    const x1=sn.x+60,y1=sn.y+20,x2=tn.x+60,y2=tn.y+20;
+    // Flow goes downward: source bottom-center → target top-center.
+    const x1=sn.x+60,y1=sn.y+44,x2=tn.x+60,y2=tn.y-2;
     // Wide transparent hit-band (clickable to delete) + the visible arrow.
     edgesHtml+=`<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="transparent" stroke-width="14" fill="none" style="pointer-events:stroke;cursor:pointer" onclick="deleteBFDEdgeById('${e.id}')"><title>클릭으로 삭제</title></path>`;
     edgesHtml+=`<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#bfd-arrow)" style="pointer-events:none"/>`;
@@ -714,13 +717,13 @@ function initBFD(){
       if(ev.shiftKey){BFD_LINK=node;return;}
       BFD_DRAG={node,offsetX:ev.clientX-node.x,offsetY:ev.clientY-node.y};
     };
-    // Connection port: drag from this dot to another node to draw an edge
-    // (true drag-and-drop, no modifier key / connect mode needed).
-    if(!isSep){
+    // Connection port at the BOTTOM: drag from this dot down to another node to
+    // draw an edge. Terminal sinks (Product Stream / 폐기물) get no outgoing port.
+    if(!BFD_SINK_TYPES.includes(node.node_type)){
       const port=document.createElement('div');
       port.className='bfd-port';
-      port.title='이 점을 드래그해서 다른 노드에 연결';
-      port.style.cssText='position:absolute;right:-8px;top:50%;transform:translateY(-50%);width:15px;height:15px;border-radius:50%;background:#3b82f6;border:2px solid #fff;cursor:crosshair;box-shadow:0 1px 3px rgba(0,0,0,0.35);z-index:6';
+      port.title='이 점을 아래 노드로 드래그해서 연결';
+      port.style.cssText='position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);width:15px;height:15px;border-radius:50%;background:#3b82f6;border:2px solid #fff;cursor:crosshair;box-shadow:0 1px 3px rgba(0,0,0,0.35);z-index:6';
       port.onmousedown=ev=>{ev.stopPropagation();ev.preventDefault();BFD_LINK=node;};
       div.appendChild(port);
     }
@@ -874,7 +877,7 @@ document.addEventListener('mousemove',ev=>{
       svg.appendChild(BFD_LINK_EL);
     }
     const rect=svg.getBoundingClientRect();
-    BFD_LINK_EL.setAttribute('d',`M ${BFD_LINK.x+60} ${BFD_LINK.y+20} L ${ev.clientX-rect.left} ${ev.clientY-rect.top}`);
+    BFD_LINK_EL.setAttribute('d',`M ${BFD_LINK.x+60} ${BFD_LINK.y+44} L ${ev.clientX-rect.left} ${ev.clientY-rect.top}`);
   }
 });
 document.addEventListener('mouseup',async ev=>{
@@ -1031,14 +1034,33 @@ function renderInputTab(){
     h+='</div></div>';
   });
 
-  if(S.length)h+='<div class="flex justify-center mt-4"><button class="btn-primary px-10 py-3 text-base" onclick="runAnalysis()">🔍 경제성 분석 실행</button></div>';
+  if(S.length){
+    h+='<div class="flex justify-center items-center gap-2 mt-4 mb-1">';
+    h+='<button class="btn-secondary text-sm" onclick="addEmptyScenario()"'+(S.length>=MAX_SCENARIOS?' disabled':'')+'>+ 시나리오 추가</button>';
+    h+='<button class="btn-secondary text-sm" onclick="setState({showBenchmarkModal:true})"'+(S.length>=MAX_SCENARIOS?' disabled':'')+'>+ 벤치마크에서 추가</button>';
+    h+='<span class="text-xs '+(S.length>=MAX_SCENARIOS?'text-red-500 font-bold':'text-gray-400')+'">'+S.length+'/'+MAX_SCENARIOS+' 시나리오 (여러 개를 추가하면 분석 결과에서 나란히 비교됩니다)</span>';
+    h+='</div>';
+    h+='<div class="flex justify-center mt-2"><button class="btn-primary px-10 py-3 text-base" onclick="runAnalysis()">🔍 경제성 분석 실행</button></div>';
+  }
   return h;
 }
 
 function renderResultsTab(){
   if(!STATE.results.length)return'<div class="card p-10 text-center text-gray-400"><div class="text-4xl mb-3">📊</div><div>시나리오 입력 탭에서 분석을 실행하세요</div></div>';
   const R=STATE.results;
-  let h='<div class="flex gap-2 mb-4 flex-wrap">';
+  // BioSTEAM linkage banner: analysis uses BioSTEAM-derived costs only for
+  // scenarios that have been applied.  Surface the state and offer a one-click.
+  const appliedN=STATE.scenarios.filter(s=>s._biosteamApplied).length;
+  const bioReady=BIOSTEAM_RESULT&&BIOSTEAM_RESULT.success;
+  let h='';
+  if(appliedN===STATE.scenarios.length&&appliedN>0){
+    h+='<div class="mb-3 p-2 rounded text-xs" style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d">✓ 아래 결과는 <b>BioSTEAM 시뮬레이션</b>에서 도출된 CAPEX·원부재료·유틸리티 원가를 기반으로 합니다.</div>';
+  }else if(bioReady){
+    h+='<div class="mb-3 p-2 rounded text-xs flex items-center justify-between" style="background:#fffbeb;border:1px solid #fde68a;color:#92400e"><span>⚠ BioSTEAM 결과가 일부 시나리오('+appliedN+'/'+STATE.scenarios.length+')에만 반영되었습니다. 결과를 BioSTEAM 기반으로 통일하려면 적용하세요.</span><button class="btn-sm" style="background:#92400e;color:#fff;border:none" onclick="applyBiosteamToAllScenarios();runAnalysis()">전체에 적용 후 재분석</button></div>';
+  }else{
+    h+='<div class="mb-3 p-2 rounded text-xs" style="background:#f8fafc;border:1px solid #e2e8f0;color:#64748b">ℹ 현재 결과는 시나리오 입력값 기반입니다. <b>공정 흐름도</b> 탭에서 BioSTEAM을 실행하면 물질수지 기반 원가로 분석할 수 있습니다. <button class="text-xs underline" style="border:none;background:none;color:#1d4ed8;cursor:pointer" onclick="goTab(\'bfd\')">→ 공정 흐름도</button></div>';
+  }
+  h+='<div class="flex gap-2 mb-4 flex-wrap">';
   h+='<button class="btn-secondary text-xs" onclick="exportCSV()">CSV 내보내기</button>';
   h+='<button class="btn-secondary text-xs" onclick="exportExcel()">Excel 내보내기</button>';
   h+='</div>';
@@ -1074,17 +1096,43 @@ function renderChartsTab(){
 }
 
 function renderFermTab(){
-  let h='<div class="card p-6" style="max-width:900px"><div class="section-title text-base mb-4">🔮 Scale-up & 발효 공정 도구</div>';
-  h+='<div class="border rounded-lg p-4 mb-4" style="border-color:#e2e8f0"><div class="font-bold text-sm mb-3" style="color:var(--green)">📐 CAPEX Scale-up 계산기 (0.6 Power Law)</div>';
-  h+='<div class="grid grid-cols-4 gap-3 mb-3">'+inputField('su__knownCapex','기준 CAPEX',50,'Mn$','number')+inputField('su__knownCap','기준 생산량',1000,'MT/yr','number')+inputField('su__targetCap','목표 생산량',5000,'MT/yr','number')+inputField('su__exponent','Scale 지수',0.6,'','number')+'</div>';
-  h+='<button class="btn-primary text-xs" onclick="runScaleUp()">계산</button><div id="scaleup-result" class="mt-3 text-xs"></div></div>';
-  const fermScs=STATE.scenarios.filter(sc=>sc.fermConfig&&sc.fermConfig.enabled&&sc._fermResult);
-  if(fermScs.length){
-    h+='<div class="border rounded-lg p-4 mb-4" style="border-color:#bfdbfe;background:#eff6ff"><div class="font-bold text-sm mb-3" style="color:#1e40af">🧫 발효 공정 비교</div>';
-    h+='<div class="overflow-x-auto"><table class="tea-table"><thead><tr><th style="text-align:left">항목</th>'+fermScs.map(s=>'<th>'+esc(s.name)+'</th>').join('')+'</tr></thead><tbody>';
-    [{l:'Titer',fn:s=>s.fermConfig.titer+' g/L'},{l:'Yield',fn:s=>s.fermConfig.yieldPct+'%'},{l:'기질 원단위',fn:s=>s._fermResult.subUnit},{l:'배치 시간',fn:s=>s._fermResult.batchTime+' h'},{l:'발효기 수',fn:s=>s._fermResult.nFerm+'기'},{l:'원재료비',fn:s=>'$'+s.rawMaterial+'/MT'},{l:'스팀',fn:s=>'$'+s.steam+'/MT'},{l:'전기',fn:s=>'$'+s.electricity+'/MT'}].forEach(row=>{h+='<tr><td>'+row.l+'</td>'+fermScs.map(s=>'<td>'+row.fn(s)+'</td>').join('')+'</tr>';});
-    h+='</tbody></table></div></div>';
+  // BioSTEAM-based: show the base CAPEX, current target, and back-calculated
+  // titer from the most recent successful BioSTEAM run.
+  const c=BIOSTEAM_RESULT&&BIOSTEAM_RESULT.success?BIOSTEAM_RESULT:null;
+  let h='<div style="max-width:900px">';
+  h+='<div class="section-title text-base mb-3">🧫 발효 공정 (BioSTEAM 기반)</div>';
+  if(!BIOSTEAM_OK){
+    h+='<div class="card p-6 text-center text-gray-400">BioSTEAM이 설치되어야 발효 공정 계산이 가능합니다. (유틸리티/부재료 탭·공정 흐름도 탭 참고)</div></div>';
+    return h;
   }
+  if(!c){
+    h+='<div class="card p-6"><div class="text-sm text-gray-600 mb-3">아직 BioSTEAM 결과가 없습니다. <b>공정 흐름도</b> 탭에서 BFD를 구성하고 <b>BioSTEAM 시뮬레이션</b>을 실행하면 여기에 기준 CAPEX·목표 생산량·Titer가 표시됩니다.</div>';
+    h+='<button class="btn-primary text-sm" onclick="goTab(\'bfd\')">→ 공정 흐름도로 이동</button></div>';
+  }else{
+    h+='<div class="card p-5 mb-4"><div class="font-bold text-sm mb-3" style="color:var(--green)">📊 BioSTEAM 기준 결과</div>';
+    h+='<div class="grid grid-cols-3 gap-3">';
+    h+='<div class="p-3 rounded" style="background:#f0fdf4;border:1px solid #bbf7d0"><div class="text-xs text-gray-500">기준 CAPEX</div><div class="font-bold text-lg" style="color:#15803d">$'+fmt(c.capexMn,2)+' M</div></div>';
+    h+='<div class="p-3 rounded" style="background:#eff6ff;border:1px solid #bfdbfe"><div class="text-xs text-gray-500">현재 기준 Target 생산량</div><div class="font-bold text-lg" style="color:#1d4ed8">'+fmtComma(c.target_MT_per_yr)+' MT/yr</div></div>';
+    h+='<div class="p-3 rounded" style="background:#faf5ff;border:1px solid #e9d5ff"><div class="text-xs text-gray-500">Titer (BioSTEAM 역산)</div><div class="font-bold text-lg" style="color:#6d28d9">'+fmt(c.titer_g_per_L,2)+' g/L</div></div>';
+    h+='</div>';
+    if(c.logic){
+      h+='<div class="grid grid-cols-3 gap-2 mt-3 text-xs text-gray-600">';
+      h+='<div>배치 시간: <b>'+fmt(c.logic.batch_time_h,1)+' h</b></div>';
+      h+='<div>운영시간: <b>'+fmtComma(c.logic.operating_hours)+' h/yr</b></div>';
+      h+='<div>주 제품 / 탄소원: <b>'+esc(c.logic.main_product||'')+' / '+esc(c.logic.main_source||'')+'</b></div>';
+      h+='</div>';
+    }
+    h+='<div class="text-xs text-gray-400 mt-2">* Titer = 발효기 최종 broth 부피 기준 제품 농도(BioSTEAM 물질수지에서 역산). 목표 생산량은 공정 흐름도 탭의 Target(MT/yr) 값입니다.</div>';
+    h+='</div>';
+    h+='<div class="card p-4 mb-4"><div class="font-bold text-sm mb-2" style="color:var(--green)">유틸리티 / 원부재료 (BioSTEAM $/MT)</div>';
+    h+='<div class="grid grid-cols-4 gap-2 text-xs">';
+    [['원재료',c.rawMaterial],['부재료',c.subMaterial],['스팀',c.steam],['전기',c.electricity],['냉각',c.cooling],['폐기물',c.waste],['감가상각',c.depreciation],['인건비',c.labor]].forEach(([l,v])=>{h+='<div class="p-2 rounded" style="background:#f8fafc;border:1px solid #e2e8f0"><div class="text-gray-500">'+l+'</div><div class="font-bold">$'+fmt(v)+'/MT</div></div>';});
+    h+='</div></div>';
+  }
+  h+='<div class="card p-4"><div class="font-bold text-sm mb-3" style="color:var(--green)">📐 CAPEX Scale-up 계산기 (0.6 Power Law)</div>';
+  h+='<div class="text-xs text-gray-400 mb-2">기준 CAPEX/생산량은 위 BioSTEAM 결과를 사용할 수 있습니다.</div>';
+  h+='<div class="grid grid-cols-4 gap-3 mb-3">'+inputField('su__knownCapex','기준 CAPEX',c?+(c.capexMn||0).toFixed(2):50,'Mn$','number')+inputField('su__knownCap','기준 생산량',c?c.target_MT_per_yr:1000,'MT/yr','number')+inputField('su__targetCap','목표 생산량',5000,'MT/yr','number')+inputField('su__exponent','Scale 지수',0.6,'','number')+'</div>';
+  h+='<button class="btn-primary text-xs" onclick="runScaleUp()">계산</button><div id="scaleup-result" class="mt-3 text-xs"></div></div>';
   h+='</div>';
   return h;
 }
@@ -1700,7 +1748,8 @@ function renderBiosteamPanel(){
       if(STATE.scenarios.length===0)h+='<option value="">(시나리오를 먼저 추가하세요)</option>';
       STATE.scenarios.forEach(sc=>h+='<option value="'+sc.id+'">'+esc(sc.name||'시나리오 '+sc.id)+'</option>');
       h+='</select>';
-      h+='<button class="btn-primary text-xs" onclick="applyBiosteamToScenario()">시나리오에 적용</button>';
+      h+='<button class="btn-primary text-xs" onclick="applyBiosteamToScenario()">선택 시나리오에 적용</button>';
+      h+='<button class="btn-secondary text-xs" onclick="applyBiosteamToAllScenarios()">전체에 적용</button>';
       h+='</div></div>';
     }else{
       h+='<div class="mt-3 p-3 rounded" style="background:#fef2f2;border:1px solid #fecaca">';
@@ -1741,22 +1790,35 @@ async function runBiosteamSim(){
   BIOSTEAM_RUNNING=false;render();setTimeout(initBFD,50);
 }
 
-function applyBiosteamToScenario(){
-  if(!BIOSTEAM_RESULT||!BIOSTEAM_RESULT.success)return alert('먼저 시뮬레이션을 실행하세요.');
-  const scId=document.getElementById('bio-apply-sc')?.value;
-  if(!scId)return alert('적용할 시나리오를 선택하세요.');
-  const sc=STATE.scenarios.find(s=>s.id==scId);
-  if(!sc)return alert('시나리오를 찾을 수 없습니다.');
-  const c=BIOSTEAM_RESULT;
+function _applyBioToSc(sc,c,cap){
   sc.capex=+(c.capexMn||0).toFixed(2);
-  sc.capacity=parseFloat(document.getElementById('bio-target')?.value)||sc.capacity;
+  if(cap)sc.capacity=cap;
   sc.rawMaterial=+(c.rawMaterial||0).toFixed(1);
   sc.subMaterial=+(c.subMaterial||0).toFixed(1);
   sc.steam=+(c.steam||0).toFixed(1);
   sc.electricity=+(c.electricity||0).toFixed(1);
   sc.cooling=+(c.cooling||0).toFixed(1);
   sc.waste=+(c.waste||0).toFixed(1);
-  alert('✓ BioSTEAM 결과가 "'+esc(sc.name||'시나리오 '+sc.id)+'"에 적용되었습니다.\n→ 시나리오 입력 탭에서 확인하세요.');
+  sc._biosteamApplied=true;
+  sc._biosteamResult=c;
+}
+function applyBiosteamToScenario(){
+  if(!BIOSTEAM_RESULT||!BIOSTEAM_RESULT.success)return alert('먼저 시뮬레이션을 실행하세요.');
+  const scId=document.getElementById('bio-apply-sc')?.value;
+  if(!scId)return alert('적용할 시나리오를 선택하세요.');
+  const sc=STATE.scenarios.find(s=>s.id==scId);
+  if(!sc)return alert('시나리오를 찾을 수 없습니다.');
+  const cap=parseFloat(document.getElementById('bio-target')?.value)||sc.capacity;
+  _applyBioToSc(sc,BIOSTEAM_RESULT,cap);
+  alert('✓ BioSTEAM 결과가 "'+esc(sc.name||'시나리오 '+sc.id)+'"에 적용되었습니다.');
+  render();setTimeout(initBFD,50);
+}
+function applyBiosteamToAllScenarios(){
+  if(!BIOSTEAM_RESULT||!BIOSTEAM_RESULT.success)return alert('먼저 시뮬레이션을 실행하세요.');
+  if(!STATE.scenarios.length)return alert('시나리오를 먼저 추가하세요.');
+  const cap=parseFloat(document.getElementById('bio-target')?.value)||0;
+  STATE.scenarios.forEach(sc=>_applyBioToSc(sc,BIOSTEAM_RESULT,cap||sc.capacity));
+  alert('✓ BioSTEAM 결과를 전체 '+STATE.scenarios.length+'개 시나리오에 적용했습니다.');
   render();setTimeout(initBFD,50);
 }
 

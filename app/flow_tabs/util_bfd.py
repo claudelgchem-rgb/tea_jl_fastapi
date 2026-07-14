@@ -404,14 +404,38 @@ def process_MVR_data(state, submitted_widget_data: dict):
     return submitted_widget_data.copy()
 
 
-def _chromatography_advanced(v, util_list, prefix, wastewater_index):
+def _util_ids(state, *keywords):
+    """Sub-material / utility ids from the shared heat_utility DB whose id
+    matches any keyword (case-insensitive).  Falls back to the full list when
+    nothing matches, so a node dropdown is never empty before the user has
+    registered that category in the 유틸리티/부재료 tab."""
+    keys = list(state.get("heat_utility", {}).keys())
+    if not keywords:
+        return keys
+    sel = [k for k in keys if any(kw in k.lower() for kw in keywords)]
+    return sel if sel else keys
+
+
+def _resin_ids(state):
+    return _util_ids(state, "resin")
+
+
+def _membrane_ids(state):
+    return _util_ids(state, "membrane")
+
+
+def _wastewater_ids(state):
+    return _util_ids(state, "waste", "sludge")
+
+
+def _chromatography_advanced(v, wastewater_list, prefix, wastewater_index):
     return [
         _num("column_price", "Empty column 가격 [USD/L resin]", v.get("column_price", 7000.0)),
         _num("P_drop", "Pressure drop [Pa]", v.get("P_drop", 0)),
         _num("motor_efficiency", "Motor Efficiency", v.get("motor_efficiency", 0)),
         _num("compressor_isentropic_efficiency", "compressor_isentropic_efficiency", v.get("compressor_isentropic_efficiency", 0)),
         _num("pump_efficiency", "Pump Efficiency", v.get("pump_efficiency", 0)),
-        _sel("wastewater_id", "Wastewater 종류", util_list, v.get("wastewater_id")),
+        _sel("wastewater_id", "Wastewater 종류", wastewater_list, v.get("wastewater_id")),
     ]
 
 
@@ -423,7 +447,7 @@ def _hic_schema(state, value):
     v["binding_material"] = v.get("binding_material", state.main_product)
     cc = _conc_cols(chem_list)
     resin = [
-        _sel("resin_id", "Resin 종류", util_list, v.get("resin_id")),
+        _sel("resin_id", "Resin 종류", _resin_ids(state), v.get("resin_id")),
         _num("resin_price", "Resin 가격 [USD/L]", state.get("heat_utility", {}).get(v.get("resin_id"), v.get("resin_price", 0.0))),
         _sel("binding_material", "Binding Chemical", chem_list, v.get("binding_material")),
         _num("binding_capacity", "Binding Capacity [g/L]", v.get("binding_capacity", 20.0)),
@@ -449,7 +473,7 @@ def _hic_schema(state, value):
         _num("volume_product", "Product Volume / Elute volume", v.get("volume_product", 0)),
         _table("_conc_product_df", "product 농도 [g/L]", cc, _rows(v, "conc_product", ["물질", "농도 [g/L]"])),
     ]
-    return [_group("고급 설정", _chromatography_advanced(v, util_list, "HIC", 0), advanced=True),
+    return [_group("고급 설정", _chromatography_advanced(v, _wastewater_ids(state), "HIC", 0), advanced=True),
             _group("레진 정보", resin), _group("용액 투입량", steps)]
 
 
@@ -488,7 +512,7 @@ def _iex_schema(state, value):
     v["binding_material"] = v.get("binding_material", state.main_product)
     cc = _conc_cols(chem_list)
     resin = [
-        _sel("resin_id", "Resin 종류", util_list, v.get("resin_id")),
+        _sel("resin_id", "Resin 종류", _resin_ids(state), v.get("resin_id")),
         _num("resin_price", "Resin 가격 [USD/L]", state.get("heat_utility", {}).get(v.get("resin_id"), v.get("resin_price", 0.0))),
         _sel("binding_material", "Binding Chemical", chem_list, v.get("binding_material")),
         _num("binding_capacity", "Binding Capacity [g/L]", v.get("binding_capacity", 20.0)),
@@ -511,7 +535,7 @@ def _iex_schema(state, value):
         _num("volume_product", "Product volume / Elute volume", v.get("volume_product", 0)),
         _table("_conc_product_df", "product 농도 [g/L]", cc, _rows(v, "conc_product", ["물질", "농도 [g/L]"])),
     ]
-    return [_group("고급 설정", _chromatography_advanced(v, util_list, "IEX", 0), advanced=True),
+    return [_group("고급 설정", _chromatography_advanced(v, _wastewater_ids(state), "IEX", 0), advanced=True),
             _group("레진 정보", resin), _group("용액 투입량", steps)]
 
 
@@ -532,7 +556,7 @@ def _gel_filtration_schema(state, value):
     v["binding_material"] = v.get("binding_material", state.main_product)
     cc = _conc_cols(chem_list)
     resin = [
-        _sel("resin_id", "Resin 종류", util_list, v.get("resin_id")),
+        _sel("resin_id", "Resin 종류", _resin_ids(state), v.get("resin_id")),
         _num("resin_price", "Resin 가격 [USD/L]", state.get("heat_utility", {}).get(v.get("resin_id"), v.get("resin_price", 0.0))),
         _sel("binding_material", "Binding Chemical", chem_list, v.get("binding_material")),
         _num("binding_capacity", "Binding Capacity [g/L]", v.get("binding_capacity", 20.0)),
@@ -552,7 +576,7 @@ def _gel_filtration_schema(state, value):
         _num("volume_product", "Product volume / Elute volume", v.get("volume_product", 0)),
         _table("_conc_product_df", "product 농도 [g/L]", cc, _rows(v, "conc_product", ["물질", "농도 [g/L]"])),
     ]
-    return [_group("고급 설정", _chromatography_advanced(v, util_list, "GF", 0), advanced=True),
+    return [_group("고급 설정", _chromatography_advanced(v, _wastewater_ids(state), "GF", 0), advanced=True),
             _group("레진 정보", resin), _group("용액 투입량", steps)]
 
 
@@ -577,14 +601,14 @@ def _diafiltration_schema(state, value):
         _num("cip_flowrate", "CIP volume [BV/hr]", v.get("cip_flowrate", 0)),
         _int("n_cip", "CIP Run 횟수", v.get("n_cip", 0)),
         _sel("cip_id", "CIP 용액 종류", util_list, v.get("cip_id")),
-        _sel("wastewater_id", "Wastewater 종류", util_list, v.get("wastewater_id")),
+        _sel("wastewater_id", "Wastewater 종류", _wastewater_ids(state), v.get("wastewater_id")),
     ]
     sep_cols = [
         {"name": "물질", "type": "select", "options": chem_list},
         {"name": "Rate In Solids", "type": "number"},
     ]
     main = [
-        _sel("membrane_id", "Membrane 종류", util_list, v.get("membrane_id")),
+        _sel("membrane_id", "Membrane 종류", _membrane_ids(state), v.get("membrane_id")),
         _num("membrane_cost", "Membrane 가격 [USD]", state.get("heat_utility", {}).get(v.get("membrane_id"), v.get("membrane_cost", 0.0))),
         _num("membrane_life", "membrane 수명 [hr]", v.get("membrane_life", 0)),
         _num("tau", "시간 [h]", v.get("tau", 0)),
@@ -614,7 +638,7 @@ def _freeze_dryer_schema(state, value):
         _num("_SHELF_PACKING_FACTOR", "Vessel 내 tray 집적도", v.get("_SHELF_PACKING_FACTOR", 0)),
         _num("_SAMPLE_PACKING_FACTOR", "Tray 내 Sample 집적도 (m2/m2)", v.get("_SAMPLE_PACKING_FACTOR", 0.7)),
         _sel("heat_id", "Heat source", util_list, v.get("heat_id")),
-        _sel("wastewater_id", "폐기물 종류", util_list, v.get("wastewater_id")),
+        _sel("wastewater_id", "폐기물 종류", _wastewater_ids(state), v.get("wastewater_id")),
     ]
     main = [
         _num("target_final_moisture_content", "최종 수분 농도 (%)", v.get("target_final_moisture_content", 0)),
@@ -664,7 +688,7 @@ def _sol_processor_schema(state, value):
     advanced = [
         _num("kW_per_m3", "Agitator kW [kW/m3]", v.get("kW_per_m3", 0.0985)),
         _num("V_wf", "Tank void factor", v.get("V_wf", 0.8)),
-        _sel("wastewater_id", "Wastewater 종류", util_list, v.get("wastewater_id")),
+        _sel("wastewater_id", "Wastewater 종류", _wastewater_ids(state), v.get("wastewater_id")),
     ]
     main = [
         _num("tau", "Mix 시간 [hr]", v.get("tau", 1)),
@@ -690,7 +714,7 @@ def _smb_schema(state, value):
     v["binding_material"] = v.get("binding_material", state.main_product)
     cc = _conc_cols(chem_list)
     resin = [
-        _sel("resin_id", "Resin 종류", util_list, v.get("resin_id")),
+        _sel("resin_id", "Resin 종류", _resin_ids(state), v.get("resin_id")),
         _sel("binding_material", "Binding Chemical", chem_list, v.get("binding_material")),
         _num("binding_capacity", "Binding Capacity [g/hr binding_material / L resin]", v.get("binding_capacity", 2.0)),
         _int("N_columns", "Number of columns", v.get("N_columns", 8)),
@@ -701,7 +725,7 @@ def _smb_schema(state, value):
         _num("volume_product", "Product flowrate / Feed flowrate []", v.get("volume_product", 0)),
         _table("_conc_product_df", "product 농도 [g/L]", cc, _rows(v, "conc_product", ["물질", "농도 [g/L]"])),
     ]
-    return [_group("고급 설정", _chromatography_advanced(v, util_list, "SMB", 0), advanced=True),
+    return [_group("고급 설정", _chromatography_advanced(v, _wastewater_ids(state), "SMB", 0), advanced=True),
             _group("레진 정보", resin)]
 
 
@@ -727,7 +751,7 @@ def _distillation_schema(state, value):
         _num("tray_spacing", "Tray간 간격[m]", v.get("tray_spacing", 0.45)),
         _num("heat_transfer_efficiency", "Reboiler 효율 [%]", v.get("heat_transfer_efficiency", 100.0)),
         _num("condenser_efficiency", "Condenser 효율 [%]", v.get("condenser_efficiency", 100.0)),
-        _sel("wastewater_id", "Wastewater 종류", util_list, v.get("wastewater_id")),
+        _sel("wastewater_id", "Wastewater 종류", _wastewater_ids(state), v.get("wastewater_id")),
     ]
     # Merge split / alpha / H_vap into one table keyed '_distill_df'.
     split_df = _get_df_from_dict_list(v.get("split", {}), ["물질", "Distillate로 가는 비율[%]"])

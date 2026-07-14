@@ -287,9 +287,16 @@ const fmt=(n,d=1)=>{if(n==null||isNaN(n))return'-';if(Math.abs(n)>=1e6)return(n/
 const fmtComma=n=>n!=null?n.toLocaleString():'-';
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML;};
 
-function inputField(id,label,value,unit,type){
+function _tipIcon(tip){return tip?'<span title="'+esc(tip).replace(/"/g,'&quot;')+'" style="cursor:help;color:#9ca3af;font-size:10px">ⓘ</span>':'';}
+function inputField(id,label,value,unit,type,tip){
   type=type||'text';
-  return '<div class="flex-1 min-w-[100px]"><div class="text-xs text-gray-500 font-medium mb-1">'+esc(label)+'</div><div class="flex items-center gap-1"><input id="'+id+'" type="'+type+'" value="'+esc(String(value||''))+'" class="input-field" onchange="handleInput(\''+id+'\',this.value)">'+(unit?'<span class="text-xs text-gray-400 whitespace-nowrap">'+esc(unit)+'</span>':'')+'</div></div>';
+  return '<div class="flex-1 min-w-[100px]"><div class="text-xs text-gray-500 font-medium mb-1 flex items-center gap-1">'+esc(label)+_tipIcon(tip)+'</div><div class="flex items-center gap-1"><input id="'+id+'" type="'+type+'" value="'+esc(String(value||''))+'" class="input-field" onchange="handleInput(\''+id+'\',this.value)">'+(unit?'<span class="text-xs text-gray-400 whitespace-nowrap">'+esc(unit)+'</span>':'')+'</div></div>';
+}
+// Read-only display for a value derived from BioSTEAM / the chemical DB.
+function derivedField(label,value,unit,badge,tip){
+  const badgeHtml=badge?'<span class="ml-1 px-1 rounded" style="font-size:8px;background:#dbeafe;color:#1d4ed8">'+esc(badge)+'</span>':'';
+  const disp=(value==null||value==='')?'-':(typeof value==='number'?fmtComma(value):esc(String(value)));
+  return '<div class="flex-1 min-w-[100px]"><div class="text-xs text-gray-500 font-medium mb-1 flex items-center gap-1">'+esc(label)+_tipIcon(tip)+badgeHtml+'</div><div class="flex items-center gap-1"><div class="input-field" style="background:#eef2ff;color:#1e3a8a;font-weight:600">'+disp+'</div>'+(unit?'<span class="text-xs text-gray-400 whitespace-nowrap">'+esc(unit)+'</span>':'')+'</div></div>';
 }
 
 function handleInput(id,val){
@@ -955,7 +962,18 @@ function renderInputTab(){
     const cs=STATE.collapsedSections,vo=!cs['var_'+sc.id],fo=!cs['fix_'+sc.id],fmo=!cs['ferm_'+sc.id],dso=!cs['ds_'+sc.id];
     h+='<div class="card mb-3 overflow-hidden"><div class="flex justify-between items-center px-4 py-3" style="background:var(--green-light)"><span class="font-bold text-sm" style="color:var(--green)">시나리오 '+(i+1)+'</span><button class="btn-danger" onclick="removeScenario('+sc.id+')">삭제</button></div><div class="p-4">';
     h+='<div class="grid grid-cols-2 gap-3 mb-3">'+inputField('sc__'+sc.id+'__name','시나리오 이름',sc.name)+inputField('sc__'+sc.id+'__fermentation','발효 파라미터',sc.fermentation||'')+'</div>';
-    h+='<div class="grid grid-cols-4 gap-3 mb-3">'+inputField('sc__'+sc.id+'__capacity','Capacity',sc.capacity,'MT/yr','number')+inputField('sc__'+sc.id+'__capex','CAPEX',sc.capex,'Mn$','number')+inputField('sc__'+sc.id+'__glucosePrice','기질 단가',sc.glucosePrice,'$/MT','number')+inputField('sc__'+sc.id+'__glucoseUnit','기질 원단위',sc.glucoseUnit,'','number')+'</div>';
+    const bio=sc._biosteamResult&&sc._biosteamResult.success?sc._biosteamResult:null;
+    const subChem=bio&&bio.substrate?bio.substrate.chemical:'탄소원';
+    const 원단위Tip='기질 원단위 = 제품 1 MT(1000kg) 생산에 필요한 기질(탄소원) 소비량 (kg/MT). BioSTEAM 물질수지에서 도출됩니다.';
+    h+='<div class="grid grid-cols-4 gap-3 mb-3">';
+    h+=inputField('sc__'+sc.id+'__capacity','Capacity',sc.capacity,'MT/yr','number');
+    h+= bio ? derivedField('CAPEX',sc.capex,'Mn$','BioSTEAM','BioSTEAM 시뮬레이션에서 도출된 설비투자비')
+            : inputField('sc__'+sc.id+'__capex','CAPEX',sc.capex,'Mn$','number','BioSTEAM 실행 후 자동 도출됩니다. 미실행 시 수동 입력.');
+    h+= bio ? derivedField('기질 단가',sc.glucosePrice,'$/MT','화학물질 DB',subChem+' 단가(화학물질 DB) × 1000')
+            : inputField('sc__'+sc.id+'__glucosePrice','기질 단가',sc.glucosePrice,'$/MT','number','탄소원 단가. BioSTEAM 실행 시 화학물질 DB 값으로 자동 반영됩니다.');
+    h+= bio ? derivedField('기질 원단위',sc.glucoseUnit,'kg/MT','BioSTEAM',원단위Tip)
+            : inputField('sc__'+sc.id+'__glucoseUnit','기질 원단위',sc.glucoseUnit,'kg/MT','number',원단위Tip);
+    h+='</div>';
 
     h+='<div class="collapsible-header mb-2" onclick="toggleSection(\'ds_'+sc.id+'\')"><span class="arrow '+(dso?'open':'')+'">▶</span><span class="text-xs font-bold" style="color:#7c3aed">🔗 데이터 연동 (화학물질DB · 용액관리 · BioSTEAM)</span></div>';
     if(dso){
@@ -977,7 +995,7 @@ function renderInputTab(){
         let totalSolCost=0;
         STATE.solList.forEach(sol=>{totalSolCost+=parseFloat(calcSolCost(sol))||0;});
         h+='<div class="text-xs text-gray-400 mt-1">'+STATE.solList.map(s=>esc(s.user_name)+' ($'+calcSolCost(s)+'/L)').join(', ')+'</div>';
-        h+='<div class="mt-1"><button class="text-xs px-2 py-0.5 rounded font-bold" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;cursor:pointer" onclick="applySolCostToScenario('+sc.id+')">→ 배지 원가를 부재료비에 반영</button></div>';
+        h+='<div class="text-xs text-gray-400 mt-1">💡 용액 사용량·부재료비는 BFD의 발효기 solution flow에서 BioSTEAM이 실제 소비량으로 계산합니다.</div>';
       }
       h+='</div>';
       h+='</div>';
@@ -1791,8 +1809,12 @@ async function runBiosteamSim(){
 }
 
 function _applyBioToSc(sc,c,cap){
-  sc.capex=+(c.capexMn||0).toFixed(2);
+  sc.capex=+(c.capexMn||0).toFixed(2);       // CAPEX from BioSTEAM
   if(cap)sc.capacity=cap;
+  if(c.substrate){                            // 기질 단가(화학물질 DB) + 기질 원단위(BioSTEAM)
+    sc.glucosePrice=+(c.substrate.price_per_mt||0).toFixed(2);
+    sc.glucoseUnit=+(c.substrate.kg_per_mt||0).toFixed(3);
+  }
   sc.rawMaterial=+(c.rawMaterial||0).toFixed(1);
   sc.subMaterial=+(c.subMaterial||0).toFixed(1);
   sc.steam=+(c.steam||0).toFixed(1);

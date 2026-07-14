@@ -404,6 +404,16 @@ def _breakdown(state, scaled, target_amount) -> Dict[str, Any]:
         "utilities_detail": util_rows,
         "titer_g_per_L": round(titer, 3),
         "target_MT_per_yr": round(target_amount / 1000.0, 4),
+        # Main carbon source (기질): unit consumption (기질 원단위, kg/MT) and its
+        # price from the chemical DB, so the scenario input can auto-fill.
+        "substrate": ({
+            "chemical": _sub_row["chemical"],
+            "kg_per_mt": _sub_row["kg_per_mt"],                 # 기질 원단위
+            "price_per_kg": _sub_row["price"],                 # from chemical DB
+            "price_per_mt": round(_sub_row["price"] * 1000.0, 2),
+            "cost_per_mt": _sub_row["cost_per_mt"],
+        } if (_sub_row := next((r for r in raw_rows if r["chemical"] == state.main_source),
+                               (raw_rows[0] if raw_rows else None))) else None),
         "logic": {
             "batch_time_h": round(ub.get_batch_time({n.id: n.data for n in state.flow_state.nodes}), 2),
             "target_kg_per_yr": target_amount,

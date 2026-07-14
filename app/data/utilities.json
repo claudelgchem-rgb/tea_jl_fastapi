@@ -1,0 +1,26 @@
+{
+  "utilities": {
+    "low_pressure_steam": 0.019,
+    "medium_pressure_steam": 0.023,
+    "high_pressure_steam": 0.0317,
+    "natural_gas": 0.022,
+    "cooling_water": 5.3333e-05,
+    "chilled_water": 0.000433333,
+    "wastewater": 0.00033333,
+    "sludge": 0.001,
+    "solid_waste": 0.0,
+    "propane": 0.000582,
+    "propylene": 0.000696,
+    "ethylene": 0.000931
+  },
+  "submaterials": {
+    "hic_resin": 400,
+    "iex_resin": 200,
+    "diafiltration_membrane": 350.0,
+    "hepa_filter": 150,
+    "air_filter": 18,
+    "cip_acid_agent": 0.02,
+    "cip_base_agent": 0.024133333,
+    "cip_water": 0.001
+  }
+}

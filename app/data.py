@@ -153,6 +153,57 @@ def load_solutions() -> List[Dict[str, Any]]:
     return []
 
 
+def load_utilities() -> Dict[str, float]:
+    """Load the default utility / sub-material price table (heat_utility).
+
+    Like ``chemicals.json`` / ``solutions.json``: a ``utilities.json`` under
+    ``app/data/`` (or the scenario data dir, or ``$TEA_UTILITIES_FILE``) supplies
+    the starting utility + sub-material unit prices, editable until saved.
+
+    Accepted shapes:
+      * ``{"utilities": {id: price, ...}, "submaterials": {id: price, ...}}``
+        (the two-table split shown in the UI; merged into one heat_utility dict)
+      * a flat ``{id: price, ...}`` mapping
+
+    Falls back to ``initial_val.json``'s ``heat_utility`` (then the built-in
+    defaults) when no file is present.
+    """
+    candidates = []
+    env = os.environ.get("TEA_UTILITIES_FILE")
+    if env:
+        candidates.append(env)
+    for d in (APP_DATA_DIR, DATA_DIR):
+        candidates.append(os.path.join(d, "utilities.json"))
+
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(raw, dict):
+            continue
+        merged: Dict[str, float] = {}
+        if "utilities" in raw or "submaterials" in raw:
+            for section in ("utilities", "submaterials"):
+                for k, v in (raw.get(section) or {}).items():
+                    try:
+                        merged[str(k)] = float(v)
+                    except (TypeError, ValueError):
+                        merged[str(k)] = 0.0
+        else:  # flat {id: price}
+            for k, v in raw.items():
+                try:
+                    merged[str(k)] = float(v)
+                except (TypeError, ValueError):
+                    merged[str(k)] = 0.0
+        if merged:
+            return merged
+    return json.loads(json.dumps(load_all_unit_defaults().get("heat_utility", {})))
+
+
 def set_chemicals(state, chem_data: Dict[str, Dict[str, Any]], build_thermo: bool = False) -> None:
     """Store the chemical table and derived lists (replaces ``upload_chemical2``).
 
@@ -206,7 +257,7 @@ def init_session(state) -> None:
     state.tmp = json.loads(json.dumps(tmp))  # deep copy
     state.currency = tmp.get("currency", 1500)
     state.operating_hours = tmp.get("operating_hours", 7920)
-    state.heat_utility = json.loads(json.dumps(state.all_unit_defaults["heat_utility"]))
+    state.heat_utility = load_utilities()
     state.gmp = True
     state.electricity_price = tmp.get("electricity_price", 0.128)
     state.od_to_dcw = tmp.get("od_to_dcw", 0.22)

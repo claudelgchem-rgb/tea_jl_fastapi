@@ -803,7 +803,12 @@ def process_generic_data(state, submitted_widget_data: dict):
         if attr.startswith("_") and attr.endswith("_df"):
             original_attr = attr[1:-3]
             if isinstance(value, pd.DataFrame):
-                processed_values[original_attr] = dict(zip(value["물질"], value[original_attr]))
+                # An empty table posts as a column-less DataFrame; guard the
+                # column access so unconfigured nodes don't KeyError ('물질').
+                if "물질" in value.columns and original_attr in value.columns:
+                    processed_values[original_attr] = dict(zip(value["물질"], value[original_attr]))
+                else:
+                    processed_values[original_attr] = {}
             processed_values.pop(attr)
         elif "." in attr:  # nested dict field flattened by the generic schema
             parent, child = attr.split(".", 1)

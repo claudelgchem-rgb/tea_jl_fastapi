@@ -175,7 +175,50 @@ def _build_state(payload: Dict[str, Any]) -> SessionState:
     edges = [FlowEdge(id=e.get("id", f"e{i}"), source=e["source"], target=e["target"])
              for i, e in enumerate(bfd.get("edges", []) or [])]
     state.flow_state = FlowState(nodes=nodes, edges=edges)
+    _process_all_nodes(state)
     return state
+
+
+def _widget_from_schema(groups) -> Dict[str, Any]:
+    """Flatten a ``build_node_schema`` group list into the flat widget dict the
+    ``process_*_data`` functions expect (table fields become ``_*_df`` row
+    lists, everything else is ``key -> value``)."""
+    widget: Dict[str, Any] = {}
+
+    def walk(fields):
+        for f in fields or []:
+            if isinstance(f, dict) and f.get("fields") is not None:  # nested group
+                walk(f["fields"])
+                continue
+            key = f.get("key")
+            if not key:
+                continue
+            widget[key] = f.get("rows", []) if f.get("kind") == "table" else f.get("value")
+
+    for g in groups or []:
+        walk(g.get("fields", []))
+    return widget
+
+
+def _process_all_nodes(state) -> None:
+    """Run every node through its v1 processor so derived fields (``stream_flow``,
+    ``in_mass``/``out_mass``, ``initial_conc`` …) always exist — even for nodes
+    the user never opened in the properties editor.  This mirrors exactly what
+    saving a node in the editor does, so simulate() no longer KeyErrors on an
+    unconfigured fermenter.  The builder+processor round-trip is lossless for
+    already-configured nodes."""
+    for fn in state.flow_state.nodes:
+        node_type = fn.data.get("node_type", "Default")
+        builder, _ = util_bfd.get_node_editor_functions(node_type)
+        value = fn.data.get("Value", {}) or {}
+        try:
+            groups = builder(state, copy.deepcopy(value))
+            widget = _widget_from_schema(groups)
+            name = fn.data.get("content") or fn.data.get("custom_value") or fn.id
+            util_bfd.apply_node_edit(state, fn, name, widget)
+        except Exception as exc:  # noqa: BLE001
+            label = fn.data.get("content") or fn.id
+            raise RuntimeError(f"노드 '{label}' ({node_type}) 처리 실패: {exc}") from exc
 
 
 def _stream_view(stream) -> Dict[str, Any]:

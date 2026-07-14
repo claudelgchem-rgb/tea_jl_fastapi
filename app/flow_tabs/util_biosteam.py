@@ -212,7 +212,12 @@ def run_biosteam2(state, nodes, edges, solutions, feat_data, batch_time):
             for chem, flow in node["Value"]["Concentration [g/L]"].items():
                 Stream_data[i].imass["l", chem] = float(flow) / 1000 * float(node["Value"]["Flow [L/hr]"])
                 Stream_data[i].price += float(Stream_data[i].imass[chem]) * chem_data["Price (USD/kg)"][chem]
-            Stream_data[i].price /= Stream_data[i].F_mass
+            # An unconfigured feed (no concentration/flow) has zero mass; avoid a
+            # divide-by-zero and leave its price at 0.
+            if Stream_data[i].F_mass > 0:
+                Stream_data[i].price /= Stream_data[i].F_mass
+            else:
+                Stream_data[i].price = 0.0
         elif node["node_type"] == "폐기물":
             Stream_data[i] = bst.MultiStream(node["content"], units="kg/hr", T=298, P=101325, phases=["l", "s", "g"])
         elif node["node_type"] == "Product Stream":

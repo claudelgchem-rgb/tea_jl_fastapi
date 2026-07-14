@@ -97,6 +97,62 @@ def load_chem_data() -> Dict[str, Dict[str, Any]]:
     return default_data.starter_chem_data()
 
 
+def load_solutions() -> List[Dict[str, Any]]:
+    """Load the default solution list from a JSON file if one is provided.
+
+    Mirrors ``load_chem_data`` / ``initial_val.json``: a ``solutions.json`` under
+    ``app/data/`` (or the scenario data dir, or ``$TEA_SOLUTIONS_FILE``) supplies
+    the starting solutions for a fresh session, editable until the user saves.
+
+    Accepted shapes:
+      * ``{"solutions": [ {user_name, autoclave, components:[{name, concentration_g_per_l}]}, ... ]}``
+      * a bare list of the same solution dicts
+    """
+    candidates = []
+    env = os.environ.get("TEA_SOLUTIONS_FILE")
+    if env:
+        candidates.append(env)
+    for d in (APP_DATA_DIR, DATA_DIR):
+        candidates.append(os.path.join(d, "solutions.json"))
+
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:  # noqa: BLE001
+            continue
+        sols = raw.get("solutions") if isinstance(raw, dict) else raw
+        if not isinstance(sols, list):
+            continue
+        out = []
+        for i, s in enumerate(sols):
+            if not isinstance(s, dict):
+                continue
+            name = s.get("user_name") or s.get("name")
+            if not name:
+                continue
+            comps = []
+            for c in s.get("components", []) or []:
+                cn = c.get("name")
+                if not cn:
+                    continue
+                try:
+                    conc = float(c.get("concentration_g_per_l", 0) or 0)
+                except (TypeError, ValueError):
+                    conc = 0.0
+                comps.append({"name": cn, "concentration_g_per_l": conc})
+            out.append({
+                "id": s.get("id") or f"sol_default_{i}",
+                "user_name": name,
+                "autoclave": bool(s.get("autoclave", True)),
+                "components": comps,
+            })
+        return out
+    return []
+
+
 def set_chemicals(state, chem_data: Dict[str, Dict[str, Any]], build_thermo: bool = False) -> None:
     """Store the chemical table and derived lists (replaces ``upload_chemical2``).
 

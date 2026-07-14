@@ -48,7 +48,7 @@ def _seed_ui(state) -> None:
          "phase": cd.get("Phase", {}).get(n, "l")}
         for n in state.chemical_list
     ]
-    state.ui_solutions = []
+    state.ui_solutions = data.load_solutions()
     state.bfd_nodes = []
     state.bfd_edges = []
     state.ui_seeded = True

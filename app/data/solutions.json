@@ -1,0 +1,11 @@
+{
+  "solutions": [
+    {
+      "user_name": "Water",
+      "autoclave": false,
+      "components": [
+        {"name": "Water", "concentration_g_per_l": 1000}
+      ]
+    }
+  ]
+}

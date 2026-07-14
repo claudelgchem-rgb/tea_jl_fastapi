@@ -1,0 +1,12 @@
+{
+  "chemicals": [
+    {"name": "Water", "formula": "H2O", "price": 0.0, "phase": "l"},
+    {"name": "Glucose", "formula": "C6H12O6", "price": 0.45, "phase": "s"},
+    {"name": "Glycerol", "formula": "C3H8O3", "price": 0.9, "phase": "l"},
+    {"name": "Methanol", "formula": "CH4O", "price": 0.4, "phase": "l"},
+    {"name": "Biomass", "formula": "", "price": 0.0, "phase": "s"},
+    {"name": "Collagen", "formula": "", "price": 100.0, "phase": "s"},
+    {"name": "NaOH", "formula": "NaOH", "price": 0.5, "phase": "s"},
+    {"name": "HCl", "formula": "ClH", "price": 0.3, "phase": "l"}
+  ]
+}

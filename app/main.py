@@ -297,6 +297,19 @@ def _split_utilities(hu: Dict[str, float]):
     return utilities, submaterials
 
 
+def _refresh_utilities(state) -> None:
+    """Reload the persisted utilities/categories into the session so node
+    dropdowns and the tab reflect the saved 유틸리티/부재료 table regardless of
+    which session/worker handled the save (in-memory state alone is not shared
+    across uvicorn workers)."""
+    hu = data.load_utilities()
+    if hu:
+        state.heat_utility = hu
+    cats = data.load_util_categories()
+    if cats:
+        state.util_categories = cats
+
+
 class UtilitiesIn(BaseModel):
     utilities: Dict[str, float] = {}
     submaterials: Dict[str, float] = {}
@@ -305,6 +318,7 @@ class UtilitiesIn(BaseModel):
 
 @app.get("/api/utilities")
 def utilities_get(state=Depends(get_state)):
+    _refresh_utilities(state)
     utilities, submaterials = _split_utilities(state.heat_utility)
     cats = _categories_for(state)
     state.util_categories = cats
@@ -333,6 +347,12 @@ def utilities_save(body: UtilitiesIn, state=Depends(get_state)):
         cats[k] = c if c in UTIL_CATEGORIES else _default_category(k)
     state.util_categories = cats
     utilities, submaterials = _split_utilities(merged)
+    # Persist to the writable data dir so every session/worker + node schema
+    # reads the same table (in-memory session state is not shared across workers).
+    try:
+        data.save_utilities_file(utilities, submaterials, cats)
+    except Exception:  # noqa: BLE001 - persistence best-effort; session still updated
+        pass
     return {"ok": True, "utilities": utilities, "submaterials": submaterials,
             "categories": cats, "category_options": UTIL_CATEGORIES}
 
@@ -425,6 +445,7 @@ class NodeEditIn(BaseModel):
 def bfd_node_schema(node_id: str, state=Depends(get_state)):
     """Rich v1 form schema (groups/number/select/table fields) for a node."""
     _sync_solutions(state)
+    _refresh_utilities(state)   # resin/wastewater/membrane dropdowns = saved 유틸리티 table
     fn = _v9_node_to_flownode(_find_v9_node(state, node_id))
     return util_bfd.build_node_schema(state, fn)
 

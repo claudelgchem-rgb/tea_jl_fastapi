@@ -168,14 +168,7 @@ def load_utilities() -> Dict[str, float]:
     Falls back to ``initial_val.json``'s ``heat_utility`` (then the built-in
     defaults) when no file is present.
     """
-    candidates = []
-    env = os.environ.get("TEA_UTILITIES_FILE")
-    if env:
-        candidates.append(env)
-    for d in (APP_DATA_DIR, DATA_DIR):
-        candidates.append(os.path.join(d, "utilities.json"))
-
-    for path in candidates:
+    for path in _utilities_paths():
         if not os.path.exists(path):
             continue
         try:
@@ -209,16 +202,33 @@ def load_utilities() -> Dict[str, float]:
     return dict(getattr(default_data, "HEAT_UTILITY_DEFAULT", {}) or {})
 
 
+def _utilities_paths() -> List[str]:
+    """Search order for utilities.json: the user-saved copy under the writable
+    data dir wins over the packaged default, so edits persist across sessions,
+    workers and restarts."""
+    paths = []
+    env = os.environ.get("TEA_UTILITIES_FILE")
+    if env:
+        paths.append(env)
+    for d in (DATA_DIR, APP_DATA_DIR):   # DATA_DIR (user-saved) first
+        paths.append(os.path.join(d, "utilities.json"))
+    return paths
+
+
+def save_utilities_file(utilities: Dict[str, float], submaterials: Dict[str, float],
+                        categories: Dict[str, str]) -> None:
+    """Persist the utility/sub-material tables + categories to the writable data
+    dir so every session/worker reads the same values."""
+    payload = {"utilities": utilities, "submaterials": submaterials, "categories": categories}
+    path = os.path.join(DATA_DIR, "utilities.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
 def load_util_categories() -> Dict[str, str]:
     """Optional ``{id: category}`` map from ``utilities.json`` (``categories``
     section).  Missing ids are inferred from the id keyword by the API layer."""
-    candidates = []
-    env = os.environ.get("TEA_UTILITIES_FILE")
-    if env:
-        candidates.append(env)
-    for d in (APP_DATA_DIR, DATA_DIR):
-        candidates.append(os.path.join(d, "utilities.json"))
-    for path in candidates:
+    for path in _utilities_paths():
         if not os.path.exists(path):
             continue
         try:

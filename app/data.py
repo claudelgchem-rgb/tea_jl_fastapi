@@ -204,6 +204,29 @@ def load_utilities() -> Dict[str, float]:
     return json.loads(json.dumps(load_all_unit_defaults().get("heat_utility", {})))
 
 
+def load_util_categories() -> Dict[str, str]:
+    """Optional ``{id: category}`` map from ``utilities.json`` (``categories``
+    section).  Missing ids are inferred from the id keyword by the API layer."""
+    candidates = []
+    env = os.environ.get("TEA_UTILITIES_FILE")
+    if env:
+        candidates.append(env)
+    for d in (APP_DATA_DIR, DATA_DIR):
+        candidates.append(os.path.join(d, "utilities.json"))
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("categories"), dict):
+            return {str(k): str(v) for k, v in raw["categories"].items()}
+        return {}
+    return {}
+
+
 def set_chemicals(state, chem_data: Dict[str, Dict[str, Any]], build_thermo: bool = False) -> None:
     """Store the chemical table and derived lists (replaces ``upload_chemical2``).
 
@@ -258,6 +281,7 @@ def init_session(state) -> None:
     state.currency = tmp.get("currency", 1500)
     state.operating_hours = tmp.get("operating_hours", 7920)
     state.heat_utility = load_utilities()
+    state.util_categories = load_util_categories()
     state.gmp = True
     state.electricity_price = tmp.get("electricity_price", 0.128)
     state.od_to_dcw = tmp.get("od_to_dcw", 0.22)

@@ -416,16 +416,31 @@ def _util_ids(state, *keywords):
     return sel if sel else keys
 
 
+def _ids_by_category(state, category, *fallback_keywords):
+    """Ids the user tagged with ``category`` in the 유틸리티/부재료 tab.
+
+    Uses the explicit per-item category map (``state.util_categories``) so a
+    user-named item (e.g. "MabSelect") shows up in the right node dropdown.
+    Falls back to keyword matching (then the full list) when no item carries the
+    category, so dropdowns are never empty."""
+    cats = state.get("util_categories", {}) or {}
+    keys = list(state.get("heat_utility", {}).keys())
+    sel = [k for k in keys if cats.get(k) == category]
+    if sel:
+        return sel
+    return _util_ids(state, *fallback_keywords) if fallback_keywords else keys
+
+
 def _resin_ids(state):
-    return _util_ids(state, "resin")
+    return _ids_by_category(state, "resin", "resin")
 
 
 def _membrane_ids(state):
-    return _util_ids(state, "membrane")
+    return _ids_by_category(state, "membrane", "membrane")
 
 
 def _wastewater_ids(state):
-    return _util_ids(state, "waste", "sludge")
+    return _ids_by_category(state, "wastewater", "waste", "sludge")
 
 
 def _chromatography_advanced(v, wastewater_list, prefix, wastewater_index):

@@ -239,10 +239,41 @@ def solutions_save(body: SolutionsIn, state=Depends(get_state)):
 # rather than a true utility (steam/water/fuel/waste) when its id matches these.
 _SUBMATERIAL_KEYWORDS = ("resin", "filter", "membrane", "cip")
 
+# Category each node dropdown selects by (resin_id / membrane_id / wastewater_id).
+UTIL_CATEGORIES = ["resin", "membrane", "wastewater", "filter", "cip", "steam", "cooling", "fuel", "기타"]
+
 
 def _is_submaterial(uid: str) -> bool:
     u = (uid or "").lower()
     return any(k in u for k in _SUBMATERIAL_KEYWORDS)
+
+
+def _default_category(uid: str) -> str:
+    u = (uid or "").lower()
+    if "resin" in u:
+        return "resin"
+    if "membrane" in u:
+        return "membrane"
+    if "waste" in u or "sludge" in u:
+        return "wastewater"
+    if "filter" in u:
+        return "filter"
+    if "cip" in u:
+        return "cip"
+    if "steam" in u or "gas" in u or "propane" in u or "propylene" in u or "ethylene" in u:
+        return "fuel" if ("gas" in u or "propane" in u or "propylene" in u or "ethylene" in u) else "steam"
+    if "cool" in u or "chill" in u or "water" in u:
+        return "cooling"
+    return "기타"
+
+
+def _categories_for(state) -> Dict[str, str]:
+    """Per-item category map, seeding any missing id from keyword inference."""
+    cats = dict(state.get("util_categories", {}) or {})
+    for k in state.heat_utility:
+        cats.setdefault(k, _default_category(k))
+    # Drop stale ids no longer in the table.
+    return {k: v for k, v in cats.items() if k in state.heat_utility}
 
 
 def _split_utilities(hu: Dict[str, float]):
@@ -255,12 +286,16 @@ def _split_utilities(hu: Dict[str, float]):
 class UtilitiesIn(BaseModel):
     utilities: Dict[str, float] = {}
     submaterials: Dict[str, float] = {}
+    categories: Dict[str, str] = {}
 
 
 @app.get("/api/utilities")
 def utilities_get(state=Depends(get_state)):
     utilities, submaterials = _split_utilities(state.heat_utility)
-    return {"utilities": utilities, "submaterials": submaterials}
+    cats = _categories_for(state)
+    state.util_categories = cats
+    return {"utilities": utilities, "submaterials": submaterials,
+            "categories": cats, "category_options": UTIL_CATEGORIES}
 
 
 @app.post("/api/utilities")
@@ -277,8 +312,15 @@ def utilities_save(body: UtilitiesIn, state=Depends(get_state)):
             except (TypeError, ValueError):
                 merged[k] = 0.0
     state.heat_utility = merged
+    # Categories: user-supplied wins, else keep/infer.
+    cats = {}
+    for k in merged:
+        c = (body.categories or {}).get(k)
+        cats[k] = c if c in UTIL_CATEGORIES else _default_category(k)
+    state.util_categories = cats
     utilities, submaterials = _split_utilities(merged)
-    return {"ok": True, "utilities": utilities, "submaterials": submaterials}
+    return {"ok": True, "utilities": utilities, "submaterials": submaterials,
+            "categories": cats, "category_options": UTIL_CATEGORIES}
 
 
 # ---------------------------------------------------------------------------

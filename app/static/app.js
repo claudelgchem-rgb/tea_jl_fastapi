@@ -268,7 +268,7 @@ let STATE = {
   chatMessages:[{role:'assistant',content:'안녕하세요. TEA-Agent v9.0 AI 어시스턴트입니다.\n\n질문 예시:\n- "현재 USD/KRW 환율 알려줘"\n- "1,3-PDO 시장 현황 알려줘"\n- "수율 근거 작성해줘"'}],
   chemList:[],chemEditName:null,
   solList:[],
-  utilList:{},subMatList:{},
+  utilList:{},subMatList:{},utilCat:{},utilCatOptions:['resin','membrane','wastewater','filter','cip','steam','cooling','fuel','기타'],
   bfdNodes:[],bfdEdges:[],bfdNodeTypes:{},bfdSelectedNode:null,
   bioProduct:'',bioSource:'Glucose',bioTargetMT:100,
   projectList:[],
@@ -776,6 +776,15 @@ function neGroup(g,gid){
   return h;
 }
 
+// Node-editor id→price field links: picking a utility id fills the price field.
+const NE_PRICE_LINK={resin_id:'resin_price',membrane_id:'membrane_cost'};
+function neSyncLinkedPrice(idKey,val){
+  const priceKey=NE_PRICE_LINK[idKey];if(!priceKey)return;
+  const price=combinedHeatUtility()[val];
+  if(price==null)return;
+  const el=document.querySelector('#bfd-props-panel [data-nekey="'+priceKey+'"]');
+  if(el){el.value=price;el.style.background='#ecfdf5';}
+}
 function neField(f,fid){
   if(f.kind==='table')return neTable(f,fid);
   const id='ne_'+fid;
@@ -784,7 +793,10 @@ function neField(f,fid){
   }
   let inner;
   if(f.kind==='select'){
-    inner='<select id="'+id+'" data-nekey="'+esc(f.key)+'" data-nekind="select" class="input-field text-xs">';
+    // When a utility-id dropdown changes, pull its price from the utilities DB
+    // into the linked price field so the coupling is visible immediately.
+    const onc=NE_PRICE_LINK[f.key]?' onchange="neSyncLinkedPrice(\''+esc(f.key)+'\',this.value)"':'';
+    inner='<select id="'+id+'" data-nekey="'+esc(f.key)+'" data-nekind="select" class="input-field text-xs"'+onc+'>';
     (f.options||[]).forEach(o=>{inner+='<option'+(String(o)===String(f.value)?' selected':'')+'>'+esc(o)+'</option>';});
     inner+='</select>';
   }else{
@@ -1230,31 +1242,48 @@ async function loadUtilities(){
   try{
     const r=await fetch('/api/utilities');const d=await r.json();
     STATE.utilList=d.utilities||{};STATE.subMatList=d.submaterials||{};
+    STATE.utilCat=d.categories||{};
+    if(d.category_options)STATE.utilCatOptions=d.category_options;
     render();
   }catch(e){}
+}
+function _defaultCat(key){
+  const u=(key||'').toLowerCase();
+  if(u.includes('resin'))return 'resin';
+  if(u.includes('membrane'))return 'membrane';
+  if(u.includes('waste')||u.includes('sludge'))return 'wastewater';
+  if(u.includes('filter'))return 'filter';
+  if(u.includes('cip'))return 'cip';
+  if(u.includes('gas')||u.includes('propane')||u.includes('propylene')||u.includes('ethylene'))return 'fuel';
+  if(u.includes('steam'))return 'steam';
+  if(u.includes('cool')||u.includes('chill')||u.includes('water'))return 'cooling';
+  return '기타';
 }
 function updateUtilPrice(kind,key,val){
   let p=parseFloat(val);if(isNaN(p)||p<0)p=0;   // no negative prices
   (kind==='util'?STATE.utilList:STATE.subMatList)[key]=p;
 }
+function updateUtilCat(key,val){STATE.utilCat[key]=val;}
 function renameUtil(kind,oldKey,newKey){
   newKey=(newKey||'').trim();if(!newKey||newKey===oldKey)return;
   const tbl=kind==='util'?STATE.utilList:STATE.subMatList;
-  tbl[newKey]=tbl[oldKey];delete tbl[oldKey];render();
+  tbl[newKey]=tbl[oldKey];delete tbl[oldKey];
+  if(oldKey in STATE.utilCat){STATE.utilCat[newKey]=STATE.utilCat[oldKey];delete STATE.utilCat[oldKey];}
+  render();
 }
 function addUtilRow(kind){
   const tbl=kind==='util'?STATE.utilList:STATE.subMatList;
   let i=1,name;do{name=(kind==='util'?'new_utility_':'new_submaterial_')+i;i++;}while(name in tbl);
-  tbl[name]=0;render();
+  tbl[name]=0;STATE.utilCat[name]=kind==='util'?'기타':'resin';render();
 }
 function removeUtilRow(kind,key){
-  delete (kind==='util'?STATE.utilList:STATE.subMatList)[key];render();
+  delete (kind==='util'?STATE.utilList:STATE.subMatList)[key];delete STATE.utilCat[key];render();
 }
 async function saveUtilities(){
-  const r=await fetch('/api/utilities',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utilities:STATE.utilList,submaterials:STATE.subMatList})});
+  const r=await fetch('/api/utilities',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utilities:STATE.utilList,submaterials:STATE.subMatList,categories:STATE.utilCat})});
   const d=await r.json();
-  STATE.utilList=d.utilities||STATE.utilList;STATE.subMatList=d.submaterials||STATE.subMatList;
-  alert('유틸리티/부재료 단가 저장 완료!');render();
+  STATE.utilList=d.utilities||STATE.utilList;STATE.subMatList=d.submaterials||STATE.subMatList;STATE.utilCat=d.categories||STATE.utilCat;
+  alert('유틸리티/부재료 단가·구분 저장 완료!\n노드(HIC/IEX resin 등) 드롭다운에 반영됩니다.');render();
 }
 function combinedHeatUtility(){
   // Recombine both tables into the single heat_utility dict BioSTEAM consumes.
@@ -1265,11 +1294,15 @@ function _utilTable(kind,title,desc,color,tbl){
   let h='<div class="card p-4 mb-4"><div class="flex justify-between items-center mb-1"><div class="font-bold text-sm" style="color:'+color+'">'+title+'</div>';
   h+='<button class="btn-sm text-xs" style="background:'+color+';color:#fff;border:none" onclick="addUtilRow(\''+kind+'\')">+ 항목 추가</button></div>';
   h+='<div class="text-xs text-gray-400 mb-2">'+desc+'</div>';
-  h+='<div class="overflow-x-auto"><table class="tea-table"><thead><tr><th style="text-align:left">항목(ID)</th><th>단가</th><th>관리</th></tr></thead><tbody>';
-  if(!keys.length)h+='<tr><td colspan="3" class="text-center text-gray-400 py-3">항목이 없습니다. "+ 항목 추가"로 등록하세요.</td></tr>';
+  h+='<div class="overflow-x-auto"><table class="tea-table"><thead><tr><th style="text-align:left">항목(ID)</th><th>구분</th><th>단가</th><th>관리</th></tr></thead><tbody>';
+  if(!keys.length)h+='<tr><td colspan="4" class="text-center text-gray-400 py-3">항목이 없습니다. "+ 항목 추가"로 등록하세요.</td></tr>';
   keys.forEach(k=>{
-    h+='<tr><td><input class="input-field" style="width:220px" value="'+esc(k)+'" onchange="renameUtil(\''+kind+'\',\''+esc(k)+'\',this.value)"></td>';
-    h+='<td><input type="number" min="0" step="any" value="'+tbl[k]+'" class="input-field text-right" style="width:130px" onchange="updateUtilPrice(\''+kind+'\',\''+esc(k)+'\',this.value)"></td>';
+    const cat=STATE.utilCat[k]||_defaultCat(k);
+    h+='<tr><td><input class="input-field" style="width:200px" value="'+esc(k)+'" onchange="renameUtil(\''+kind+'\',\''+esc(k)+'\',this.value)"></td>';
+    h+='<td><select class="input-field text-xs" style="width:120px" onchange="updateUtilCat(\''+esc(k)+'\',this.value)">';
+    STATE.utilCatOptions.forEach(o=>{h+='<option'+(o===cat?' selected':'')+'>'+esc(o)+'</option>';});
+    h+='</select></td>';
+    h+='<td><input type="number" min="0" step="any" value="'+tbl[k]+'" class="input-field text-right" style="width:120px" onchange="updateUtilPrice(\''+kind+'\',\''+esc(k)+'\',this.value)"></td>';
     h+='<td><button class="btn-danger" onclick="removeUtilRow(\''+kind+'\',\''+esc(k)+'\')">삭제</button></td></tr>';
   });
   h+='</tbody></table></div></div>';
@@ -1277,10 +1310,10 @@ function _utilTable(kind,title,desc,color,tbl){
 }
 function renderUtilTab(){
   let h='<div class="section-title text-base mb-2">⚡ 유틸리티 / 부재료 단가 관리</div>';
-  h+='<div class="text-xs text-gray-500 mb-3">진짜 유틸리티(스팀·냉각수·연료 등)와 부재료(resin·filter·membrane·CIP 약품 등)를 분리해 관리합니다. HIC/IEX column의 resin 종류·가격이 여기서 정의됩니다. <b>BioSTEAM 실행 시 두 표는 하나의 heat_utility로 합쳐져 전달됩니다.</b></div>';
+  h+='<div class="text-xs text-gray-500 mb-3">진짜 유틸리티(스팀·냉각수·연료 등)와 부재료(resin·filter·membrane·CIP 약품 등)를 분리해 관리합니다. 각 항목의 <b>구분</b>(resin/membrane/wastewater…)을 지정하면, 노드(HIC/IEX column의 Resin 종류, Diafiltration의 Membrane, Wastewater 종류 등) 드롭다운이 그 구분에 맞는 항목만 보여줍니다. 이름은 자유롭게 지정 가능합니다. <b>저장 후 노드를 다시 열면 반영됩니다.</b></div>';
   h+='<div class="flex gap-2 mb-4"><button class="btn-primary text-sm" onclick="saveUtilities()">💾 서버에 저장</button><button class="btn-secondary text-sm" onclick="loadUtilities()">🔄 새로고침</button></div>';
   h+=_utilTable('util','⚡ 유틸리티 (steam, cooling water, fuel, waste)','단위 소비량당 단가($/kg 또는 $/kmol 등, 초기값 기준)','#0f766e',STATE.utilList);
-  h+=_utilTable('sub','🧫 부재료 (resin, filter, membrane, CIP)','HIC/IEX resin, diafiltration membrane, HEPA/air filter, CIP 약품 등. 소비 단위당 단가.','#92400e',STATE.subMatList);
+  h+=_utilTable('sub','🧫 부재료 (resin, filter, membrane, CIP)','HIC/IEX resin, diafiltration membrane, HEPA/air filter, CIP 약품 등. 구분을 resin/membrane 등으로 지정하세요.','#92400e',STATE.subMatList);
   return h;
 }
 

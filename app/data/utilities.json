@@ -22,5 +22,27 @@
     "cip_acid_agent": 0.02,
     "cip_base_agent": 0.024133333,
     "cip_water": 0.001
+  },
+  "categories": {
+    "low_pressure_steam": "steam",
+    "medium_pressure_steam": "steam",
+    "high_pressure_steam": "steam",
+    "natural_gas": "fuel",
+    "cooling_water": "cooling",
+    "chilled_water": "cooling",
+    "wastewater": "wastewater",
+    "sludge": "wastewater",
+    "solid_waste": "wastewater",
+    "propane": "fuel",
+    "propylene": "fuel",
+    "ethylene": "fuel",
+    "hic_resin": "resin",
+    "iex_resin": "resin",
+    "diafiltration_membrane": "membrane",
+    "hepa_filter": "filter",
+    "air_filter": "filter",
+    "cip_acid_agent": "cip",
+    "cip_base_agent": "cip",
+    "cip_water": "cip"
   }
 }

@@ -68,9 +68,23 @@ def get_state(request: Request, response: Response):
 # Page
 # ---------------------------------------------------------------------------
 
+def _asset_ver() -> str:
+    """Cache-busting token = newest mtime of the static bundle, so browsers
+    always refetch app.js/tailwind.css after a deploy instead of serving a
+    stale cached copy."""
+    latest = 0.0
+    for name in ("app.js", "tailwind.css"):
+        p = os.path.join(BASE, "static", name)
+        try:
+            latest = max(latest, os.path.getmtime(p))
+        except OSError:
+            pass
+    return str(int(latest))
+
+
 @app.get("/")
 def index(request: Request, response: Response, state=Depends(get_state)):
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse(request, "index.html", {"asset_ver": _asset_ver()})
 
 
 @app.get("/favicon.ico")

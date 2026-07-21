@@ -201,7 +201,12 @@ def load_utilities() -> Dict[str, float]:
                     merged[str(k)] = 0.0
         if merged:
             return merged
-    return json.loads(json.dumps(load_all_unit_defaults().get("heat_utility", {})))
+    # Fallbacks: initial_val.json's heat_utility, then the built-in default so
+    # the 유틸리티/부재료 tab and node dropdowns are never empty.
+    hu = load_all_unit_defaults().get("heat_utility")
+    if hu:
+        return json.loads(json.dumps(hu))
+    return dict(getattr(default_data, "HEAT_UTILITY_DEFAULT", {}) or {})
 
 
 def load_util_categories() -> Dict[str, str]:

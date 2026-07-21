@@ -6,7 +6,7 @@
 <title>TEA-Agent Platform v9.0</title>
 <!-- Vendored locally so the app has no external CDN dependency (works in
      network-restricted deployments; avoids blocking on unreachable CDNs). -->
-<link rel="stylesheet" href="/static/tailwind.css">
+<link rel="stylesheet" href="/static/tailwind.css?v={{ asset_ver }}">
 <script src="/static/chart.umd.min.js"></script>
 <script src="/static/xlsx.full.min.js"></script>
 <style>
@@ -97,6 +97,6 @@
 <body class="bg-gray-50 min-h-screen">
 <div id="app"></div>
 <div id="g-tooltip"></div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_ver }}"></script>
 </body>
 </html>

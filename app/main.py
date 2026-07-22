@@ -253,8 +253,10 @@ def solutions_save(body: SolutionsIn, state=Depends(get_state)):
 # rather than a true utility (steam/water/fuel/waste) when its id matches these.
 _SUBMATERIAL_KEYWORDS = ("resin", "filter", "membrane", "cip")
 
-# Category each node dropdown selects by (resin_id / membrane_id / wastewater_id).
+# Category each item can carry; the first four mean it belongs to the 부재료
+# (sub-material) table, the rest to the utility table.
 UTIL_CATEGORIES = ["resin", "membrane", "wastewater", "filter", "cip", "steam", "cooling", "fuel", "기타"]
+SUBMATERIAL_CATEGORIES = {"resin", "membrane", "filter", "cip"}
 
 
 def _is_submaterial(uid: str) -> bool:
@@ -290,10 +292,16 @@ def _categories_for(state) -> Dict[str, str]:
     return {k: v for k, v in cats.items() if k in state.heat_utility}
 
 
-def _split_utilities(hu: Dict[str, float]):
+def _split_utilities(hu: Dict[str, float], cats: Optional[Dict[str, str]] = None):
+    """Split into the two tables by *category* (not id keyword) so an item's
+    table membership is what the user set: category in {resin,membrane,filter,cip}
+    -> 부재료 table, otherwise -> utility table.  Falls back to keyword inference
+    for items with no category yet."""
+    cats = cats or {}
     utilities, submaterials = {}, {}
     for k, v in (hu or {}).items():
-        (submaterials if _is_submaterial(k) else utilities)[k] = v
+        cat = cats.get(k) or _default_category(k)
+        (submaterials if cat in SUBMATERIAL_CATEGORIES else utilities)[k] = v
     return utilities, submaterials
 
 
@@ -319,9 +327,9 @@ class UtilitiesIn(BaseModel):
 @app.get("/api/utilities")
 def utilities_get(state=Depends(get_state)):
     _refresh_utilities(state)
-    utilities, submaterials = _split_utilities(state.heat_utility)
     cats = _categories_for(state)
     state.util_categories = cats
+    utilities, submaterials = _split_utilities(state.heat_utility, cats)
     return {"utilities": utilities, "submaterials": submaterials,
             "categories": cats, "category_options": UTIL_CATEGORIES}
 
@@ -346,7 +354,7 @@ def utilities_save(body: UtilitiesIn, state=Depends(get_state)):
         c = (body.categories or {}).get(k)
         cats[k] = c if c in UTIL_CATEGORIES else _default_category(k)
     state.util_categories = cats
-    utilities, submaterials = _split_utilities(merged)
+    utilities, submaterials = _split_utilities(merged, cats)
     # Persist to the writable data dir so every session/worker + node schema
     # reads the same table (in-memory session state is not shared across workers).
     try:

@@ -1310,7 +1310,7 @@ function _utilTable(kind,title,desc,color,tbl){
 }
 function renderUtilTab(){
   let h='<div class="section-title text-base mb-2">⚡ 유틸리티 / 부재료 단가 관리</div>';
-  h+='<div class="text-xs text-gray-500 mb-3">진짜 유틸리티(스팀·냉각수·연료 등)와 부재료(resin·filter·membrane·CIP 약품 등)를 분리해 관리합니다. 각 항목의 <b>구분</b>(resin/membrane/wastewater…)을 지정하면, 노드(HIC/IEX column의 Resin 종류, Diafiltration의 Membrane, Wastewater 종류 등) 드롭다운이 그 구분에 맞는 항목만 보여줍니다. 이름은 자유롭게 지정 가능합니다. <b>저장 후 노드를 다시 열면 반영됩니다.</b></div>';
+  h+='<div class="text-xs text-gray-500 mb-3">각 항목의 <b>구분</b>이 표 소속을 정합니다 — <b>resin/membrane/filter/cip → 부재료 표</b>, 그 외(steam/cooling/fuel/wastewater/기타) → <b>유틸리티 표</b>. 노드 드롭다운은 표에 연결됩니다: <b>Resin·Membrane·CIP 종류 → 부재료 표 전체</b>, <b>Wastewater·Heat source → 유틸리티 표 전체</b>. 이름은 자유롭게 지정 가능합니다. <b>저장 후 노드를 다시 열면 반영됩니다.</b></div>';
   h+='<div class="flex gap-2 mb-4"><button class="btn-primary text-sm" onclick="saveUtilities()">💾 서버에 저장</button><button class="btn-secondary text-sm" onclick="loadUtilities()">🔄 새로고침</button></div>';
   h+=_utilTable('util','⚡ 유틸리티 (steam, cooling water, fuel, waste)','단위 소비량당 단가($/kg 또는 $/kmol 등, 초기값 기준)','#0f766e',STATE.utilList);
   h+=_utilTable('sub','🧫 부재료 (resin, filter, membrane, CIP)','HIC/IEX resin, diafiltration membrane, HEPA/air filter, CIP 약품 등. 구분을 resin/membrane 등으로 지정하세요.','#92400e',STATE.subMatList);
